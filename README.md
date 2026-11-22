@@ -1,6 +1,6 @@
 ﻿# Recipe Analyzer (Minecraft Java Edition)
 
-一个面向 Minecraft Java Edition mod 的合成表分析器。支持上传 mod jar/zip，解析配方、资产、标签、进度，并在网页中展示合成/熔炼/机器/特殊配方。
+一个面向 Minecraft Java Edition mod 的合成表分析器，**定位为离线批量配方审计工具**（面向整合包作者、服主、配方审计/翻译补全/CI 检查）。支持上传 mod jar/zip，解析配方、资产、标签、进度，在网页中展示合成/熔炼/机器/特殊配方，并给出解析覆盖率与可疑项报告。
 
 支持 **1.21.1 到 26.3** 的所有正式版（含 1.21.x 全系与 26.x 新命名版本），在上传页选择对应版本即可。版本列表见 `config/versions.json`。
 
@@ -12,6 +12,8 @@
 - **Vanilla assets fallback**：按所选版本自动检测本机 client jar，也可在 UI 填写 jar 路径或设置 `VANILLA_JAR` 环境变量，用于解析 `minecraft:*` 物品/方块图标与名称
 - 将输入材料渲染为 3x3 合成格，产物单独显示
 - 对产物做启发式分类（方块/工具/武器/护甲/食物/材料/未知等）
+- **解析质量仪表**：扫描/解析数、解析率、未知材料数、可疑配方数；可疑项在卡片上标红，可勾选「只看可疑」筛选，并可导出 CSV
+- 下载完整的 `analysis.json`（含 `summary.coverage` 与每条记录的 `parseQuality`），便于 CI / 批量审计消费
 
 ## 运行
 
@@ -29,8 +31,32 @@ npm start
 - 默认版本可用 `MC_VERSION=1.21.4 npm start` 修改；`GET /api/versions` 返回支持列表、最新版本与默认版本
 - 每个版本的 vanilla 渲染缓存互相隔离在 `data/vanilla-renders/<版本>/`；切换版本不会复用旧图。其他版本可在首次分析时按需渲染，或调用 `POST /api/prewarm-vanilla` 传 `{ "mcVersion": "26.3" }` 预热
 
+## 解析质量 / 审计
+
+分析结果 `analysis.json` 的 `summary.coverage` 字段：
+
+| 字段 | 含义 |
+|---|---|
+| `recipeFilesScanned` | `data/**/recipe(s)/` 下 JSON 文件总数 |
+| `recipesParsed` / `parseRate` | 成功解析数 / 解析率 |
+| `invalidJsonFiles` | JSON 解析失败数 |
+| `advancementFilesSkipped` | 位于配方路径但实为进度的文件数 |
+| `unknownTypeRecipes` / `inferredRecipes` | 未知类型数 / 启发式推断数 |
+| `totalIngredients` / `unknownIngredients` | 材料总数 / 无法识别的材料数 |
+| `suspiciousRecipes` / `suspiciousReasons` | 可疑配方数与各原因分布 |
+
+每条配方（含变体合并后的记录）带 `parseQuality`，`suspicious=true` 的四种原因：
+
+- `zero-input`：没有任何可解析输入材料（最危险的静默错误，会显示成「零材料合成」）
+- `unknown-ingredient`：含无法识别结构的材料
+- `result-unresolved`：没有产物 ID
+- `unknown-recipe-type`：配方 type 未识别且未能推断
+
+可疑 ≠ 一定错误，仅提示人工核对。CLI / CI 可直接读 `summary.coverage` 做阈值检查。
+
 ## 说明与限制
 - 支持 1.21.1+ Java Edition 常见数据结构；核心解析按结构特征兼容而非按版本号分支。新版若出现全新配方 schema，遇到后再在 `lib/recipes.js` 的 normalize 层补充即可。
+- **仅静态解析 jar 内的配方 JSON**：不含 KubeJS / CraftTweaker 等运行时脚本动态注册的配方，也不具备 JEI/EMI 运行时插件能力。审计时请把覆盖率当作「静态可提取部分」的指标。
 - 未识别 recipe type 会尽量启发式解析；无法静态解析的特殊配方会显示说明，不强行画 3x3。
 - Tag 会按 mod 数据展开。默认**不**注入原版等价物；勾选上传表单里的“显示等价原版”后，才会把 `#c:eggs`、`#c:storage_blocks/iron`、`#c:dyes/*` 等常见通用标签补上原版物品。映射表见 `config/tag-fallbacks.json`。
 - 方块使用服务端预渲染 3D 图标（含原版预热库）；复杂 `builtin/entity` 模型可能回退占位。

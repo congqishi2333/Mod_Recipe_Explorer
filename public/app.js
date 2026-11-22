@@ -9,10 +9,15 @@ const vanillaStatus = document.getElementById('vanillaStatus');
 const vanillaJarInput = document.getElementById('vanillaJar');
 const mcVersionSelect = document.getElementById('mcVersion');
 const includeVanillaEquivalentsInput = document.getElementById('includeVanillaEquivalents');
+const suspiciousOnly = document.getElementById('suspiciousOnly');
+const auditDashboard = document.getElementById('auditDashboard');
+const exportSuspicious = document.getElementById('exportSuspicious');
+const downloadAnalysis = document.getElementById('downloadAnalysis');
 const tpl = document.getElementById('recipeTpl');
 
 let allRecipes = [];
 let hasAnalyzed = false;
+let currentAnalysisUrl = '';
 
 async function loadVersions() {
   try {
@@ -59,6 +64,9 @@ form.addEventListener('submit', async (e) => {
   resultsEl.innerHTML = '';
   summaryEl.innerHTML = '';
   categoryStats.innerHTML = '';
+  auditDashboard.innerHTML = '';
+  if (suspiciousOnly) suspiciousOnly.checked = false;
+  if (downloadAnalysis) { downloadAnalysis.href = '#'; downloadAnalysis.style.display = 'none'; }
   const fd = new FormData();
   fd.append('mod', file);
   fd.append('mcVersion', mcVersionSelect.value || '1.21.1');
@@ -75,7 +83,14 @@ form.addEventListener('submit', async (e) => {
     const analysis = await ares.json();
     allRecipes = analysis.recipes || [];
     hasAnalyzed = true;
+    currentAnalysisUrl = data.analysisUrl || '';
     buildCategoryFilter(analysis.summary?.categories || {});
+    renderAudit(analysis.summary?.coverage);
+    if (downloadAnalysis && currentAnalysisUrl) {
+      downloadAnalysis.href = currentAnalysisUrl;
+      downloadAnalysis.download = `${(data.modFile || 'analysis').replace(/\.(jar|zip)$/i, '')}-analysis.json`;
+      downloadAnalysis.style.display = '';
+    }
     render();
   } catch (err) {
     console.error(err);
@@ -85,7 +100,57 @@ form.addEventListener('submit', async (e) => {
 
 categoryFilter.addEventListener('change', render);
 if (acqFilter) acqFilter.addEventListener('change', render);
+if (suspiciousOnly) suspiciousOnly.addEventListener('change', render);
 searchInput.addEventListener('input', render);
+if (exportSuspicious) exportSuspicious.addEventListener('click', exportSuspiciousCsv);
+
+function renderAudit(coverage) {
+  if (!coverage) { auditDashboard.innerHTML = '<div class="empty">无覆盖率数据</div>'; return; }
+  const pct = (v) => `${Math.round((v || 0) * 100)}%`;
+  const warn = (coverage.suspiciousRecipes || 0) > 0;
+  const reasonEntries = Object.entries(coverage.suspiciousReasons || {});
+  auditDashboard.innerHTML = `
+    <div class="audit-grid">
+      <div class="audit-metric"><div class="audit-metric-label">配方文件扫描</div><div class="audit-metric-value">${coverage.recipeFilesScanned ?? 0}</div></div>
+      <div class="audit-metric"><div class="audit-metric-label">成功解析</div><div class="audit-metric-value">${coverage.recipesParsed ?? 0}</div></div>
+      <div class="audit-metric ${coverage.parseRate != null && coverage.parseRate < 1 ? 'metric-warn' : ''}"><div class="audit-metric-label">解析率</div><div class="audit-metric-value">${pct(coverage.parseRate)}</div></div>
+      <div class="audit-metric ${warn ? 'metric-warn' : ''}"><div class="audit-metric-label">可疑配方</div><div class="audit-metric-value">${coverage.suspiciousRecipes ?? 0}</div></div>
+      <div class="audit-metric ${(coverage.unknownIngredients || 0) > 0 ? 'metric-warn' : ''}"><div class="audit-metric-label">未知材料</div><div class="audit-metric-value">${coverage.unknownIngredients ?? 0}<span class="audit-metric-sub"> / ${coverage.totalIngredients ?? 0}</span></div></div>
+      <div class="audit-metric"><div class="audit-metric-label">未知类型 / 推断</div><div class="audit-metric-value">${coverage.unknownTypeRecipes ?? 0}<span class="audit-metric-sub"> / ${coverage.inferredRecipes ?? 0}</span></div></div>
+    </div>
+    <div class="audit-reasons">${reasonEntries.length ? reasonEntries.map(([k, v]) => `<span class="stat">${esc(REASON_LABELS[k] || k)}: ${v}</span>`).join('') : ''}</div>
+    ${warn
+      ? `<div class="audit-warning">⚠ 有 ${coverage.suspiciousRecipes} 条配方解析存疑（零输入 / 未知材料 / 无产物 / 未知类型）。已标红，勾选「只看可疑」可定位核对。</div>`
+      : '<div class="audit-ok">✓ 未发现明显解析异常。</div>'}`;
+}
+
+const REASON_LABELS = {
+  'zero-input': '零输入',
+  'unknown-ingredient': '未知材料',
+  'result-unresolved': '无产物',
+  'unknown-recipe-type': '未知类型',
+};
+
+function exportSuspiciousCsv() {
+  const rows = allRecipes.filter(r => r.parseQuality?.suspicious);
+  const q = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+  const lines = [['产物', '产物ID', '类型', '来源文件', '可疑原因'].map(q).join(',')];
+  for (const r of rows) {
+    lines.push([
+      r.result?.name,
+      r.result?.id,
+      r.type,
+      r.sourceFile,
+      (r.parseQuality?.reasons || []).map(x => REASON_LABELS[x] || x).join(';'),
+    ].map(q).join(','));
+  }
+  const blob = new Blob(['\ufeff' + lines.join('\n')], { type: 'text/csv;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'suspicious-recipes.csv';
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
 
 function buildCategoryFilter(categories) {
   categoryFilter.innerHTML = '<option value="">全部</option>';
@@ -104,10 +169,12 @@ function buildCategoryFilter(categories) {
 function render() {
   const cat = categoryFilter.value;
   const acq = acqFilter ? acqFilter.value : '';
+  const onlySus = suspiciousOnly ? suspiciousOnly.checked : false;
   const q = searchInput.value.trim().toLowerCase();
   const filtered = allRecipes.filter(r => {
     if (cat && (r.classification?.category || '未知') !== cat) return false;
     if (acq && (r.acquisition || 'recipe') !== acq) return false;
+    if (onlySus && !r.parseQuality?.suspicious) return false;
     if (!q) return true;
     const hay = [r.result?.name, r.result?.id, r.type, r.recipeCategory, r.classification?.category, r.sourceFile, r.acquisition, ...(r.notes||[]), ...(r.advancements||[]).map(a=>a.title||a.description||'')].filter(Boolean).join(' ').toLowerCase();
     return hay.includes(q);
@@ -117,8 +184,8 @@ function render() {
   if (!filtered.length) {
     if (!hasAnalyzed) {
       resultsEl.innerHTML = `<div class="empty">请先上传一个 mod。</div>`;
-    } else if (q || cat || acq) {
-      resultsEl.innerHTML = `<div class="empty">没有匹配的配方。</div>`;
+    } else if (q || cat || acq || onlySus) {
+      resultsEl.innerHTML = `<div class="empty">没有匹配的配方${onlySus ? '（没有可疑解析项）' : ''}。</div>`;
     } else {
       resultsEl.innerHTML = `<div class="empty">无配方</div>`;
     }
@@ -148,6 +215,10 @@ function renderRecipe(r) {
   addTag(tags, r.recipeCategory || 'unknown');
   if (r.shapeless) addTag(tags, 'shapeless');
   if (r.special) addTag(tags, 'special/custom');
+  if (r.parseQuality?.suspicious) {
+    node.classList.add('suspicious-card');
+    addTag(tags, `⚠ ${(r.parseQuality.reasons || []).map(x => REASON_LABELS[x] || x).join('/')}`, 'suspicious');
+  }
 
   const gridWrap = node.querySelector('.crafting');
   const grid = node.querySelector('.grid');

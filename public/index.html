@@ -9,8 +9,8 @@
 <body>
   <header class="topbar">
     <div>
-      <h1>合成表分析器 <span class="badge">Java Edition · 多版本</span></h1>
-      <p class="sub">上传 mod jar/zip，自动解析配方、提取图标、渲染 3x3 合成表并分类。</p>
+      <h1>合成表分析器 <span class="badge">Java Edition · 多版本 · 批量审计</span></h1>
+      <p class="sub">上传 mod jar/zip，自动解析配方、提取图标、渲染 3x3 合成表并分类。面向整合包作者 / 服主 / 批量配方审计。</p>
     </div>
   </header>
 
@@ -54,8 +54,21 @@
         <label>搜索
           <input id="searchInput" placeholder="产物名 / id / 类型" />
         </label>
+        <label class="checkbox-label inline">
+          <input id="suspiciousOnly" type="checkbox" /> 只看可疑解析
+        </label>
       </div>
       <div id="categoryStats" class="category-stats"></div>
+    </section>
+
+    <section class="panel audit-panel">
+      <h2>解析质量 / 覆盖率（审计）</h2>
+      <div id="auditDashboard" class="audit-dashboard"><div class="empty">分析完成后显示覆盖率与可疑项统计。</div></div>
+      <div class="audit-actions">
+        <button id="exportSuspicious" type="button" class="btn-small">导出可疑配方 CSV</button>
+        <a id="downloadAnalysis" class="btn-small" href="#" download style="display:none">下载完整 analysis.json</a>
+      </div>
+      <p class="audit-note">静态解析：仅统计 jar 内配方 JSON，<b>不含 KubeJS / CraftTweaker 等运行时脚本动态注册的配方</b>。可疑项不代表一定错误，仅提示需人工核对。</p>
     </section>
 
     <section class="panel results-panel">

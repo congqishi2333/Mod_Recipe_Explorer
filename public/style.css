@@ -3,8 +3,8 @@
 .topbar{padding:20px 24px;border-bottom:1px solid var(--line);background:#191919}
 h1{margin:0;font-size:28px} .badge{font-size:12px;background:#2e4a22;color:#c8f0b0;padding:2px 8px;border-radius:10px;vertical-align:middle}
 .sub{margin:6px 0 0;color:var(--muted)}
-.layout{display:grid;gap:16px;padding:16px;grid-template-columns:340px 1fr;grid-template-areas:"upload filters" "upload results"}
-.upload-panel{grid-area:upload}.filters-panel{grid-area:filters}.results-panel{grid-area:results}
+.layout{display:grid;gap:16px;padding:16px;grid-template-columns:340px 1fr;grid-template-areas:"upload filters" "upload audit" "upload results"}
+.upload-panel{grid-area:upload}.filters-panel{grid-area:filters}.audit-panel{grid-area:audit}.results-panel{grid-area:results}
 .panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px}
 .panel h2{margin:0 0 10px;font-size:16px;color:#d9ffd0}
 input[type=file],input,select,button{font:inherit}
@@ -40,7 +40,7 @@ button:hover{background:#3f6832}
 .source{margin-top:8px;font-size:12px;color:var(--muted)}
 .source-path{word-break:break-all;margin-top:4px;color:#9bb}
 .empty{color:var(--muted);padding:20px;border:1px dashed #444;border-radius:8px}
-@media (max-width: 900px){.layout{grid-template-columns:1fr;grid-template-areas:"upload" "filters" "results"}}
+@media (max-width: 900px){.layout{grid-template-columns:1fr;grid-template-areas:"upload" "filters" "audit" "results"}}
 
 .cycle-wrap{display:flex;align-items:center;justify-content:center}
 .tag-badge{position:absolute;left:1px;top:0;font-size:10px;font-weight:700;color:#cfe8ff;text-shadow:1px 1px 0 #000;pointer-events:none}
@@ -85,3 +85,24 @@ button:hover{background:#3f6832}
 .ingredient-row{display:grid;grid-template-columns:40px 1fr auto;gap:8px;align-items:center;background:#1a1a1a;border:1px solid #3a3a3a;padding:4px 6px;border-radius:6px}
 .ingredient-name{font-size:12px;color:#ddd;line-height:1.3;word-break:break-word}
 .ingredient-count{font-size:12px;color:#9fd0ff;font-weight:700;padding-left:6px}
+
+/* 审计 / 覆盖率仪表 */
+.checkbox-label.inline{flex-direction:row;align-items:center;justify-content:flex-start;align-self:flex-end;padding-bottom:7px;font-size:13px}
+.audit-dashboard{min-height:44px}
+.audit-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px}
+.audit-metric{background:#161616;border:1px solid var(--line);border-radius:8px;padding:10px 12px}
+.audit-metric-label{font-size:12px;color:var(--muted)}
+.audit-metric-value{font-size:24px;font-weight:700;margin-top:4px;color:#d9ffd0}
+.audit-metric-sub{font-size:13px;color:var(--muted);font-weight:400}
+.audit-metric.metric-warn{border-color:#8a5a20;background:#241a10}
+.audit-metric.metric-warn .audit-metric-value{color:var(--warn)}
+.audit-warning,.audit-ok{margin-top:10px;padding:8px 12px;border-radius:6px;font-size:13px;line-height:1.5}
+.audit-warning{background:#3a2a12;border:1px solid #8a5a20;color:#ffdca8}
+.audit-ok{background:#1e2a1e;border:1px solid #3a6a3a;color:#b8f0b8}
+.audit-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+.btn-small{display:inline-block;font-size:12px;padding:6px 10px;text-decoration:none;background:#2a3a4a;border:1px solid #3a5a7a;color:#cfe4ff;border-radius:6px;cursor:pointer}
+.btn-small:hover{background:#33506a}
+.audit-note{margin:10px 0 0;font-size:12px;color:var(--muted);line-height:1.5}
+.audit-reasons{margin-top:8px;display:flex;gap:6px;flex-wrap:wrap}
+.tag.suspicious{background:#5a2a1a;border-color:#8a4020;color:#ffc9a8}
+.recipe-card.suspicious-card{border-color:#7a4020;box-shadow:0 0 0 1px rgba(138,64,32,.4)}
