@@ -60,6 +60,15 @@ function makeZip(files) {
   eocd.writeUInt32LE(offset, 16);
   return Buffer.concat([...locals, ...centrals, eocd]);
 }
+function makeFaceTexture(name, rgb) {
+  const tex = new PNG({ width: 16, height: 16 });
+  for (let i = 0; i < tex.data.length; i += 4) {
+    tex.data[i] = rgb[0]; tex.data[i + 1] = rgb[1]; tex.data[i + 2] = rgb[2]; tex.data[i + 3] = 255;
+  }
+  const p = path.join(tmp, name);
+  fs.writeFileSync(p, PNG.sync.write(tex));
+  return p;
+}
 function makeTexture() {
   const tex = new PNG({ width: 16, height: 16 });
   for (let i = 0; i < tex.data.length; i += 4) {
@@ -207,6 +216,43 @@ const beforeInvisible = getRenderStats().invisibleFallbacks;
 renderModel3DToPng(simple, texMap, 1);
 check('visible<=8 被计入统计', getRenderStats().invisibleFallbacks > beforeInvisible,
   `${beforeInvisible} -> ${getRenderStats().invisibleFallbacks}`);
+
+console.log('\n[10] 视角：通用光栅器应看到上/前/左');
+const faceColors = {
+  up:[255,0,0], down:[0,255,0], south:[0,0,255],
+  north:[255,255,0], east:[255,0,255], west:[0,255,255],
+};
+const faceRefs = {}, faceTexMap = {}, coloredFaces = {};
+for (const [f, rgb] of Object.entries(faceColors)) {
+  faceRefs[f] = `face_${f}`;
+  faceTexMap[faceRefs[f]] = makeFaceTexture(`${faceRefs[f]}.png`, rgb);
+  coloredFaces[f] = { texture: `#${f}`, uv:[0,0,16,16] };
+}
+const viewPng = renderModel3DToPng({
+  elements: [{ from:[0,0,0], to:[16,16,16], rotation:{axis:'y',angle:0,origin:[8,8,8]}, faces:coloredFaces }],
+  textures: faceRefs,
+}, faceTexMap, 64);
+const faceCounts = {};
+if (viewPng) {
+  for (let i = 0; i < viewPng.data.length; i += 4) {
+    const r = viewPng.data[i], g = viewPng.data[i + 1], b = viewPng.data[i + 2];
+    if (viewPng.data[i + 3] <= 10) continue;
+    let f = null;
+    if (r > 90 && g < 70 && b < 70) f = 'up';
+    else if (g > 90 && r < 70 && b < 70) f = 'down';
+    else if (b > 90 && r < 70 && g < 70) f = 'south';
+    else if (r > 90 && g > 90 && b < 70) f = 'north';
+    else if (r > 90 && b > 90 && g < 70) f = 'east';
+    else if (g > 90 && b > 90 && r < 70) f = 'west';
+    if (f) faceCounts[f] = (faceCounts[f] || 0) + 1;
+  }
+}
+check('可见上面（红）', (faceCounts.up || 0) > 50, `up=${faceCounts.up || 0}`);
+check('可见前面 south（蓝）', (faceCounts.south || 0) > 50, `south=${faceCounts.south || 0}`);
+check('可见左面 west（青）', (faceCounts.west || 0) > 50, `west=${faceCounts.west || 0}`);
+check('不可见底面（绿）', !faceCounts.down, `down=${faceCounts.down || 0}`);
+check('不可见后面 north（黄）', !faceCounts.north, `north=${faceCounts.north || 0}`);
+check('不可见右面 east（品红）', !faceCounts.east, `east=${faceCounts.east || 0}`);
 
 console.log(`\n结果: ${pass} PASS / ${fail} FAIL\n`);
 process.exit(fail ? 1 : 0);
