@@ -7,6 +7,7 @@ const searchInput = document.getElementById('searchInput');
 const categoryStats = document.getElementById('categoryStats');
 const vanillaStatus = document.getElementById('vanillaStatus');
 const vanillaJarInput = document.getElementById('vanillaJar');
+const includeVanillaEquivalentsInput = document.getElementById('includeVanillaEquivalents');
 const tpl = document.getElementById('recipeTpl');
 
 let allRecipes = [];
@@ -39,6 +40,7 @@ form.addEventListener('submit', async (e) => {
   fd.append('mod', file);
   const vjar = vanillaJarInput.value.trim();
   if (vjar) fd.append('vanillaJar', vjar);
+  if (includeVanillaEquivalentsInput?.checked) fd.append('includeVanillaEquivalents', '1');
   try {
     const res = await fetch('/api/analyze', { method: 'POST', body: fd });
     const data = await res.json();

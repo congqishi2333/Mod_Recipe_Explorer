@@ -25,6 +25,10 @@
           <input id="vanillaJar" type="text" name="vanillaJar" placeholder="留空自动检测；也可填绝对路径" />
         </label>
         <div id="vanillaStatus" class="status small">检测 vanilla jar...</div>
+        <label class="checkbox-label">
+          <input id="includeVanillaEquivalents" type="checkbox" name="includeVanillaEquivalents" />
+          显示等价原版（c/forge 标签回退，默认严格按 mod 数据）
+        </label>
         <button type="submit">分析</button>
       </form>
       <div id="status" class="status">等待上传...</div>

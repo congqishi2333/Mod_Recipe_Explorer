@@ -1,0 +1,24 @@
+Recipe Analyzer
+Copyright (c) 2026 Recipe Analyzer contributors
+
+## License of this project
+
+The source code of this project is licensed under the GNU General Public
+License version 3 only (GPL-3.0-only). See the LICENSE file for the full text.
+
+## Third-party assets are NOT covered by this license
+
+This tool loads, parses and renders assets (textures, models, blockstates,
+language files) from a Minecraft client jar and from user-supplied mod jars.
+Those assets are **not** licensed under this project's GPL-3.0.
+
+* Minecraft vanilla assets are copyright Mojang AB and remain subject to the
+  Minecraft End User License Agreement and Mojang's asset/brand guidelines.
+* Mod assets remain the property of their respective authors and are subject
+  to their own licenses.
+
+The PNG icons and 3D renders written to `data/` are derived from those assets.
+They are generated for recipe analysis and personal use. They are **not**
+relicensed by this project's GPL-3.0. When redistributing generated images,
+attribute Mojang and the respective mod authors, state the source, and do not
+use them commercially without permission from the respective rights holders.

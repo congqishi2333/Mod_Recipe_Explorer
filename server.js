@@ -1,19 +1,44 @@
 ﻿import express from 'express';
 import multer from 'multer';
+import pino from 'pino';
 import path from 'path';
 import fs from 'fs';
+import os from 'os';
 import { fileURLToPath } from 'url';
-import { analyzeModJar } from './lib/analyzer.js';
-import { prewarmVanillaRenders } from './lib/analyzer.js';
+import { analyzeModJar, prewarmVanillaRenders, getPrewarmProgress } from './lib/analyzer.js';
 import { findVanillaJar, loadVanillaAssets } from './lib/vanilla.js';
+import { getRenderStats } from './lib/render3d.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const PORT = process.env.PORT || 3033;
+const log = pino({ level: process.env.LOG_LEVEL || 'info' });
 
 const dataDir = path.join(__dirname, 'data');
 const uploadDir = path.join(dataDir, 'uploads');
 fs.mkdirSync(uploadDir, { recursive: true });
+
+// 用户提供的 vanillaJar 只允许 .jar 且位于已知的 Minecraft 安装目录下，
+// 防止任意绝对路径读取。环境变量 VANILLA_JAR 是服务端配置，不走此校验。
+const VANILLA_ROOTS = [
+  path.join(os.homedir(), '.minecraft', 'versions'),
+  path.join(os.homedir(), '.minecraft', 'libraries', 'net', 'minecraft', 'client'),
+  path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), '.minecraft', 'versions'),
+  path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'minecraft-dev-mcp', 'jars'),
+  path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'minecraft-dev-mcp', 'remapped'),
+];
+function safeVanillaJar(input) {
+  if (!input) return null;
+  const p = String(input);
+  if (!p.toLowerCase().endsWith('.jar')) {
+    const e = new Error('vanillaJar must be a .jar file'); e.status = 400; throw e;
+  }
+  const resolved = path.resolve(p);
+  if (resolved.includes('..') || !VANILLA_ROOTS.some(root => resolved.startsWith(root + path.sep))) {
+    const e = new Error('vanillaJar must be inside a recognized Minecraft directory'); e.status = 400; throw e;
+  }
+  return resolved;
+}
 
 const storage = multer.diskStorage({
   destination: (_req, _file, cb) => cb(null, uploadDir),
@@ -22,31 +47,57 @@ const storage = multer.diskStorage({
     cb(null, `${Date.now()}-${safe}`);
   }
 });
-const upload = multer({ storage, fileFilter: (_req, file, cb) => {
-  if (file.originalname.toLowerCase().endsWith('.jar') || file.originalname.toLowerCase().endsWith('.zip')) cb(null, true);
-  else cb(new Error('Only .jar/.zip supported'));
-}});
+const upload = multer({
+  storage,
+  limits: { fileSize: 200 * 1024 * 1024, files: 1 },
+  fileFilter: (_req, file, cb) => {
+    if (file.originalname.toLowerCase().endsWith('.jar') || file.originalname.toLowerCase().endsWith('.zip')) cb(null, true);
+    else cb(new Error('Only .jar/.zip supported'));
+  },
+});
 
 app.use(express.json({ limit: '2mb' }));
 app.use('/', express.static(path.join(__dirname, 'public')));
-app.use('/data', express.static(dataDir));
+// 只暴露分析结果、图标、渲染图和 vanilla 预热图，不暴露 uploads/ 里别人上传的 jar
+const idSafe = s => String(s).replace(/[^a-zA-Z0-9._-]/g, '_');
+function sendIfExists(res, p) {
+  if (!fs.existsSync(p)) return res.status(404).end();
+  res.sendFile(p);
+}
+app.get('/data/vanilla-renders/:file', (req, res) =>
+  sendIfExists(res, path.join(dataDir, 'vanilla-renders', path.basename(req.params.file))));
+app.get('/data/:id/analysis.json', (req, res) =>
+  sendIfExists(res, path.join(dataDir, idSafe(req.params.id), 'analysis.json')));
+app.get('/data/:id/:kind/:file', (req, res) => {
+  const kind = req.params.kind;
+  if (kind !== 'icons' && kind !== 'renders') return res.status(404).end();
+  sendIfExists(res, path.join(dataDir, idSafe(req.params.id), kind, path.basename(req.params.file)));
+});
 
 app.get('/api/health', (_req, res) => res.json({ ok: true }));
 
 app.post('/api/prewarm-vanilla', async (req, res) => {
   try {
-    const out = await prewarmVanillaRenders({ mcVersion: req.body?.mcVersion || '1.21.1', vanillaJar: req.body?.vanillaJar || null });
+    const out = await prewarmVanillaRenders({ mcVersion: req.body?.mcVersion || '1.21.1', vanillaJar: safeVanillaJar(req.body?.vanillaJar) });
     res.json(out);
   } catch (e) {
-    res.status(500).json({ ok: false, error: String(e?.message || e) });
+    res.status(e?.status || 500).json({ ok: false, error: String(e?.message || e) });
   }
 });
 
 app.get('/api/vanilla-status', (req, res) => {
-  const explicit = req.query.path ? String(req.query.path) : null;
+  let explicit;
+  try { explicit = safeVanillaJar(req.query.path); }
+  catch (e) { return res.status(e?.status || 500).json({ ok: false, error: String(e?.message || e) }); }
   const jarPath = explicit || findVanillaJar('1.21.1');
   const loaded = loadVanillaAssets('1.21.1', jarPath);
-  res.json({ ok: !!loaded.ok, jarPath: loaded.jarPath || jarPath || null, error: loaded.error || null });
+  res.json({
+    ok: !!loaded.ok,
+    jarPath: loaded.jarPath || jarPath || null,
+    error: loaded.error || null,
+    prewarm: getPrewarmProgress(),
+    renderStats: getRenderStats(),
+  });
 });
 
 app.post('/api/analyze', upload.single('mod'), async (req, res) => {
@@ -54,16 +105,21 @@ app.post('/api/analyze', upload.single('mod'), async (req, res) => {
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
     const outDir = path.join(dataDir, path.parse(req.file.filename).name);
     fs.mkdirSync(outDir, { recursive: true });
-    const vanillaJar = req.body?.vanillaJar ? String(req.body.vanillaJar) : null;
-    const result = await analyzeModJar(req.file.path, outDir, { mcVersion: '1.21.1', vanillaJar });
+    const vanillaJar = safeVanillaJar(req.body?.vanillaJar);
+    const includeVanillaEquivalents = req.body?.includeVanillaEquivalents === true
+      || req.body?.includeVanillaEquivalents === '1'
+      || req.body?.includeVanillaEquivalents === 'true';
+    const result = await analyzeModJar(req.file.path, outDir, {
+      mcVersion: '1.21.1', vanillaJar, includeVanillaEquivalents,
+    });
     res.json({
       ok: true,
       analysisUrl: `/data/${path.basename(outDir)}/analysis.json`,
       ...result.summary,
     });
   } catch (e) {
-    console.error(e);
-    res.status(500).json({ error: String(e?.message || e) });
+    log.error({ err: e }, 'analyze failed');
+    res.status(e?.status || 500).json({ error: String(e?.message || e) });
   }
 });
 
@@ -75,10 +131,13 @@ app.get('/api/analysis/:id', (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`recipe-analyzer listening on http://127.0.0.1:${PORT}`);
+  log.info({ port: PORT }, 'recipe-analyzer listening');
   const v = findVanillaJar('1.21.1');
-  console.log(v ? `Vanilla 1.21.1 jar: ${v}` : 'Vanilla 1.21.1 jar: not found (set VANILLA_JAR or provide in UI)');
-  prewarmVanillaRenders({ mcVersion: '1.21.1', vanillaJar: process.env.VANILLA_JAR || null })
-    .then(r => console.log('[vanilla-prewarm]', r))
-    .catch(e => console.warn('[vanilla-prewarm] failed:', e?.message || e));
+  log.info({ jar: v }, v ? 'vanilla jar detected' : 'vanilla jar not found');
+  // 延迟到下一轮事件循环再启动预热，避免阻塞首个请求；进度见 /api/vanilla-status
+  setImmediate(() => {
+    prewarmVanillaRenders({ mcVersion: '1.21.1', vanillaJar: process.env.VANILLA_JAR || null })
+      .then(r => log.info({ result: r }, 'vanilla prewarm done'))
+      .catch(e => log.warn({ err: e }, 'vanilla prewarm failed'));
+  });
 });

@@ -14,6 +14,7 @@ input[type=file],input,select,button{font:inherit}
 button{background:#35592b;color:#fff;border:1px solid #4f7a40;padding:8px 10px;border-radius:6px;cursor:pointer}
 button:hover{background:#3f6832}
 .status{margin-top:10px;color:var(--muted);font-size:13px}.status.small{margin-top:0;font-size:12px}
+.checkbox-label{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);line-height:1.4}
 .summary{margin-top:10px;font-size:13px;line-height:1.5}
 .filter-row{display:flex;gap:12px;flex-wrap:wrap}
 .filter-row label{display:flex;flex-direction:column;gap:4px;font-size:13px;color:var(--muted)}

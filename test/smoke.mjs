@@ -1,0 +1,212 @@
+// 回归冒烟测试：验证 P0/P1 渲染与索引修复
+import fs from 'fs';
+import path from 'path';
+import os from 'os';
+import { PNG } from 'pngjs';
+import zlib from 'zlib';
+import { renderModel3DToPng, getRenderStats } from '../lib/render3d.js';
+import { buildAssetIndex, resolveItemRender, resolveFullModel, expandTag } from '../lib/assets.js';
+import { readZipEntries, getJson } from '../lib/zip.js';
+
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ra-smoke-'));
+let pass = 0, fail = 0;
+function check(name, cond, detail = '') {
+  if (cond) { pass++; console.log(`  PASS  ${name}${detail ? ' — ' + detail : ''}`); }
+  else { fail++; console.log(`  FAIL  ${name}${detail ? ' — ' + detail : ''}`); }
+}
+function buf(obj) { return { getData: () => Buffer.from(JSON.stringify(obj)) }; }
+function countVisible(png) {
+  if (!png) return 0;
+  let n = 0;
+  for (let i = 3; i < png.data.length; i += 4) if (png.data[i] > 10) n++;
+  return n;
+}
+function makeZip(files) {
+  const locals = [], centrals = [];
+  let offset = 0;
+  for (const [name, data] of files) {
+    const nameBuf = Buffer.from(name, 'utf8');
+    const packed = zlib.deflateRawSync(data);
+    const local = Buffer.alloc(30 + nameBuf.length);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(20, 4);
+    local.writeUInt16LE(8, 8); // deflate
+    local.writeUInt32LE(packed.length, 18);
+    local.writeUInt32LE(data.length, 22);
+    local.writeUInt16LE(nameBuf.length, 26);
+    nameBuf.copy(local, 30);
+    const localPart = Buffer.concat([local, packed]);
+    locals.push(localPart);
+
+    const central = Buffer.alloc(46 + nameBuf.length);
+    central.writeUInt32LE(0x02014b50, 0);
+    central.writeUInt16LE(20, 4);
+    central.writeUInt16LE(20, 6);
+    central.writeUInt16LE(8, 10);
+    central.writeUInt32LE(packed.length, 20);
+    central.writeUInt32LE(data.length, 24);
+    central.writeUInt16LE(nameBuf.length, 28);
+    central.writeUInt32LE(offset, 42);
+    nameBuf.copy(central, 46);
+    centrals.push(central);
+    offset += localPart.length;
+  }
+  const cdSize = centrals.reduce((n, b) => n + b.length, 0);
+  const eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(0x06054b50, 0);
+  eocd.writeUInt16LE(files.length, 8);
+  eocd.writeUInt16LE(files.length, 10);
+  eocd.writeUInt32LE(cdSize, 12);
+  eocd.writeUInt32LE(offset, 16);
+  return Buffer.concat([...locals, ...centrals, eocd]);
+}
+function makeTexture() {
+  const tex = new PNG({ width: 16, height: 16 });
+  for (let i = 0; i < tex.data.length; i += 4) {
+    tex.data[i] = 200; tex.data[i + 1] = 150; tex.data[i + 2] = 100; tex.data[i + 3] = 255;
+  }
+  const p = path.join(tmp, 'tex.png');
+  fs.writeFileSync(p, PNG.sync.write(tex));
+  return p;
+}
+
+const texPath = makeTexture();
+const texMap = { 'block/stone': texPath, 'minecraft:block/stone': texPath, 'stone': texPath };
+const faces = {};
+for (const f of ['up', 'down', 'north', 'south', 'east', 'west']) faces[f] = { texture: '#all', uv: [0, 0, 16, 16] };
+
+console.log('\n[1] 渲染：等距快路 (isSimpleCube)');
+const simple = { elements: [{ from: [0, 0, 0], to: [16, 16, 16], faces }], textures: { all: 'block/stone' } };
+const rIso = renderModel3DToPng(simple, texMap, 64);
+check('iso cube 渲染出可见像素', countVisible(rIso) > 8, `visible=${countVisible(rIso)}`);
+
+console.log('\n[2] 渲染：通用光栅器 (带 element rotation 绕过快路)');
+const rotated = {
+  elements: [{ from: [0, 0, 0], to: [16, 16, 16], rotation: { axis: 'y', angle: 0, origin: [8, 8, 8] }, faces }],
+  textures: { all: 'block/stone' },
+};
+const rGen = renderModel3DToPng(rotated, texMap, 64);
+check('通用光栅器渲染出可见像素', countVisible(rGen) > 8, `visible=${countVisible(rGen)}`);
+
+console.log('\n[3] 索引：vanilla blockstates 收集');
+const modEntries = new Map([['assets/testmod/blockstates/foo.json', buf({ variants: {} })]]);
+const vanilla = {
+  entries: new Map([
+    ['assets/minecraft/blockstates/stone.json', buf({ variants: {} })],
+    ['assets/minecraft/models/item/stone.json', buf({ parent:'block/cube_all', textures:{} })],
+    ['assets/minecraft/models/block/cube_all.json', buf({ textures: { all: 'block/stone' }, elements: [{ from: [0,0,0], to: [16,16,16], faces }] })],
+  ]),
+  langs: {},
+};
+const idx = buildAssetIndex(modEntries, vanilla);
+check('收集 mod blockstate', idx.blockstates.has('testmod:foo'), [...idx.blockstates].join(','));
+check('收集 vanilla blockstate', idx.blockstates.has('minecraft:stone'), [...idx.blockstates].join(','));
+
+console.log('\n[4] 模型链：parent 不带 block/ 前缀的兜底');
+const itemEntries = new Map([['assets/testmod/models/item/cube_item.json', buf({ parent: 'cube_all', textures: {} })]]);
+const r = resolveItemRender('testmod:cube_item', idx, itemEntries, vanilla, new Map());
+check('cube_item 解析为 3D', r.mode === '3d', `mode=${r.mode}`);
+
+console.log('\n[4a] blockstate variants 指向不同名 model');
+const bsEntries = new Map([
+  ['assets/testmod/models/item/weird_block.json', buf({ parent:'item/generated', textures:{ layer0:'block/weird' } })],
+  ['assets/testmod/blockstates/weird_block.json', buf({ variants:{ '':{ model:'testmod:block/actual_shape' } } })],
+  ['assets/testmod/models/block/actual_shape.json', buf({ textures:{ all:'block/weird' }, elements:[{ from:[0,0,0], to:[16,16,16], faces }] })],
+]);
+const bsVanilla = { entries: bsEntries, langs:{} };
+const bsIdx = buildAssetIndex(bsEntries, bsVanilla);
+const br = resolveItemRender('testmod:weird_block', bsIdx, bsEntries, bsVanilla, new Map());
+check('从 blockstate 找到不同名的 3D model', br.mode === '3d', `mode=${br.mode}`);
+
+console.log('\n[4c] 内置父模型兜底（不依赖 vanilla jar）');
+const builtinEntries = new Map([
+  ['assets/testmod/models/item/builtin_parent.json', buf({ parent:'minecraft:block/cube_all', textures:{ all:'block/stone' } })],
+]);
+const builtinVanilla = { entries: new Map(), langs: {} };
+const builtinIdx = buildAssetIndex(builtinEntries, builtinVanilla);
+const builtinModel = resolveFullModel('testmod:builtin_parent', builtinIdx, builtinEntries, builtinVanilla, new Map());
+const builtinRender = resolveItemRender('testmod:builtin_parent', builtinIdx, builtinEntries, builtinVanilla, new Map());
+check('cube_all 缺文件时用内置 elements', builtinModel?.elements?.length === 1, `elements=${builtinModel?.elements?.length}`);
+check('内置父模型仍解析为 3D', builtinRender.mode === '3d', `mode=${builtinRender.mode}`);
+
+console.log('\n[4b] 半透明方块退 2D');
+const glassFaces = Object.fromEntries(['up','down','north','south','east','west'].map(f=>[f,{ texture:'#all', uv:[0,0,16,16] }]));
+const glassEntries = new Map([
+  ['assets/minecraft/models/item/glass.json', buf({ parent:'item/generated', textures:{ layer0:'block/glass' } })],
+  ['assets/minecraft/blockstates/glass.json', buf({ variants:{} })],
+  ['assets/minecraft/models/block/glass.json', buf({ textures:{ all:'block/glass' }, elements:[{ from:[0,0,0], to:[16,16,16], faces:glassFaces }] })],
+]);
+const glassVanilla = { entries: glassEntries, langs:{} };
+const glassIdx = buildAssetIndex(new Map(), glassVanilla);
+const gr = resolveItemRender('minecraft:glass', glassIdx, new Map(), glassVanilla, new Map());
+check('半透明玻璃判成 2D', gr.mode === '2d', `mode=${gr.mode}`);
+const sr = resolveItemRender('minecraft:stone', idx, new Map(), vanilla, new Map());
+check('实心方块仍判 3D', sr.mode === '3d', `mode=${sr.mode}`);
+
+console.log('\n[5] tintindex：灰白纹理被 colormap 染色');
+const tintedFaces = {};
+for (const f of ['up','down','north','south','east','west']) tintedFaces[f] = { texture: '#all', uv: [0,0,16,16], tintindex: 0 };
+const tinted = {
+  elements: [{ from:[0,0,0], to:[16,16,16], rotation:{ axis:'y', angle:0, origin:[8,8,8] }, faces: tintedFaces }],
+  textures: { all:'block/stone' },
+  _tintColors: { 0: [0,255,0] },
+};
+const rTint = renderModel3DToPng(tinted, texMap, 64);
+let rr=0, gg=0, bb=0, np=0;
+if (rTint) for (let i=0;i<rTint.data.length;i+=4) if (rTint.data[i+3]>10) { rr+=rTint.data[i]; gg+=rTint.data[i+1]; bb+=rTint.data[i+2]; np++; }
+check('tintindex 把灰纹理染绿', np>8 && gg>rr*1.5 && gg>bb*1.5,
+  `avg=(${(rr/np).toFixed(0)},${(gg/np).toFixed(0)},${(bb/np).toFixed(0)})`);
+
+console.log('\n[6] uvlock：旋转 90° 且有 uvlock 时仍能渲染');
+const uvlocked = {
+  elements: [{ from:[0,0,0], to:[16,16,16], rotation:{ axis:'y', angle:90, origin:[8,8,8] },
+    faces: Object.fromEntries(['up','down','north','south','east','west'].map(f=>[f,{ texture:'#all', uv:[0,0,16,16], uvlock:true }])) }],
+  textures: { all:'block/stone' },
+};
+const rUv = renderModel3DToPng(uvlocked, texMap, 64);
+check('uvlock 模型渲染出可见像素', countVisible(rUv) > 8, `visible=${countVisible(rUv)}`);
+
+console.log('\n[7] 标签 fallback：JSON 配置 + 原版等价开关默认关');
+const fallbackJson = JSON.parse(fs.readFileSync(new URL('../config/tag-fallbacks.json', import.meta.url), 'utf8'));
+check('fallback 表已抽成 JSON', Array.isArray(fallbackJson['c:ingots/iron']), `keys=${Object.keys(fallbackJson).length}`);
+const tagEntries = new Map([
+  ['data/c/tags/item/ingots/iron.json', buf({ values: ['testmod:custom_iron_ingot'] })],
+  ['data/c/tags/item/custom_gems.json', buf({ values: ['testmod:custom_gem'] })],
+]);
+const tagVanilla = {
+  entries: new Map([
+    ['assets/minecraft/models/item/iron_ingot.json', buf({ parent: 'item/generated' })],
+    ['assets/minecraft/models/item/custom_gem.json', buf({ parent: 'item/generated' })],
+  ]),
+  langs: {},
+};
+const strictIdx = buildAssetIndex(tagEntries, tagVanilla);
+const looseIdx = buildAssetIndex(tagEntries, tagVanilla, { includeVanillaEquivalents: true });
+check('默认严格按 mod 标签展开', JSON.stringify(expandTag('c:ingots/iron', strictIdx)) === JSON.stringify(['testmod:custom_iron_ingot']),
+  `ids=${expandTag('c:ingots/iron', strictIdx).join(',')}`);
+check('默认不强行补同名原版', JSON.stringify(expandTag('c:custom_gems', strictIdx)) === JSON.stringify(['testmod:custom_gem']),
+  `ids=${expandTag('c:custom_gems', strictIdx).join(',')}`);
+check('开启后补原版等价物', expandTag('c:ingots/iron', looseIdx)[0] === 'minecraft:iron_ingot',
+  `ids=${expandTag('c:ingots/iron', looseIdx).join(',')}`);
+check('开启后通用 c: 标签也补原版', expandTag('c:custom_gems', looseIdx).includes('minecraft:custom_gem'),
+  `ids=${expandTag('c:custom_gems', looseIdx).join(',')}`);
+
+console.log('\n[8] zip：中央目录索引 + 按需解压');
+const zipPath = path.join(tmp, 'stream.zip');
+fs.writeFileSync(zipPath, makeZip([
+  ['data/testmod/recipe/a.json', Buffer.from('{"ok":true,"name":"a"}')],
+  ['assets/testmod/textures/item/a.png', Buffer.from([137,80,78,71])],
+]));
+const zipIndex = readZipEntries(zipPath);
+check('zip 只索引文件条目', zipIndex.entries.size === 2, `entries=${zipIndex.entries.size}`);
+check('getData 按需解压 deflate', getJson(zipIndex.entries, 'data/testmod/recipe/a.json')?.name === 'a');
+check('纹理字节按需读取', zipIndex.entries.get('assets/testmod/textures/item/a.png').getData()[0] === 137);
+
+console.log('\n[9] 静默兜底可见性计数');
+const beforeInvisible = getRenderStats().invisibleFallbacks;
+renderModel3DToPng(simple, texMap, 1);
+check('visible<=8 被计入统计', getRenderStats().invisibleFallbacks > beforeInvisible,
+  `${beforeInvisible} -> ${getRenderStats().invisibleFallbacks}`);
+
+console.log(`\n结果: ${pass} PASS / ${fail} FAIL\n`);
+process.exit(fail ? 1 : 0);

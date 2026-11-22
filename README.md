@@ -18,7 +18,7 @@ npm install
 npm start
 ```
 
-打开 http://127.0.0.1:3033
+打开 http://127.0.0.1:3033。日志为结构化 JSON，可用 `LOG_LEVEL=debug` 提高详细度。
 
 ## Vanilla fallback
 - 自动检测：`%APPDATA%\.minecraft\versions\1.21.1\1.21.1.jar`
@@ -28,7 +28,7 @@ npm start
 ## 说明与限制
 - 当前主要针对 **1.21.1 NeoForge** 常见数据结构；其他版本/加载器后续扩展。
 - 未识别 recipe type 会尽量启发式解析；无法静态解析的特殊配方会显示说明，不强行画 3x3。
-- Tag 会展开并优先映射常见通用标签到原版等价物品（如 `#c:eggs`、`#c:storage_blocks/iron`、`#c:dyes/*`）。
+- Tag 会按 mod 数据展开。默认**不**注入原版等价物；勾选上传表单里的“显示等价原版”后，才会把 `#c:eggs`、`#c:storage_blocks/iron`、`#c:dyes/*` 等常见通用标签补上原版物品。映射表见 `config/tag-fallbacks.json`。
 - 方块使用服务端预渲染 3D 图标（含原版预热库）；复杂 `builtin/entity` 模型可能回退占位。
 - 科技模组机器配方兼容是“尽量支持”：静态 jar 无法等同 JEI/EMI 运行时插件能力。
 
@@ -53,9 +53,12 @@ npm start
 - `lib/analyzer.js` - 主流程，输出 `data/<upload>/analysis.json` + icons/renders
 - `lib/render3d.js` - 服务端方块 3D 预渲染
 - `lib/advancements.js` - 进度解析与物品关联
+- `config/tag-fallbacks.json` - 可选的原版等价标签映射表
 - `public/` - 前端页面
 - `data/` - 上传与分析结果（运行时生成）
 
 ## License
 
 GPL-3.0-only. See [LICENSE](./LICENSE).
+
+自研代码使用 GPL-3.0-only。**原版材质与各模组素材不在此授权范围内**，渲染产物（图标/3D 图）版权归 Mojang 及对应模组作者所有，转载需署名并注明来源。详见 [NOTICE](./NOTICE)。
