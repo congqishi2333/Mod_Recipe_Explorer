@@ -2,6 +2,7 @@
 const statusEl = document.getElementById('status');
 const summaryEl = document.getElementById('summary');
 const resultsEl = document.getElementById('results');
+const jumpBar = document.getElementById('jumpBar');
 const categoryFilter = document.getElementById('categoryFilter');
 const searchInput = document.getElementById('searchInput');
 const categoryStats = document.getElementById('categoryStats');
@@ -12,6 +13,7 @@ const includeVanillaEquivalentsInput = document.getElementById('includeVanillaEq
 const suspiciousOnly = document.getElementById('suspiciousOnly');
 const auditDashboard = document.getElementById('auditDashboard');
 const iconRenderStatsEl = document.getElementById('iconRenderStats');
+const dependencyDashboard = document.getElementById('dependencyDashboard');
 const exportSuspicious = document.getElementById('exportSuspicious');
 const downloadAnalysis = document.getElementById('downloadAnalysis');
 const tpl = document.getElementById('recipeTpl');
@@ -19,6 +21,8 @@ const tpl = document.getElementById('recipeTpl');
 let allRecipes = [];
 let hasAnalyzed = false;
 let currentAnalysisUrl = '';
+// 点击图标「伪跳转」前的筛选状态，供「返回原搜索」恢复。
+let jumpBackState = null;
 
 async function loadVersions() {
   try {
@@ -59,18 +63,21 @@ loadVersions();
 
 form.addEventListener('submit', async (e) => {
   e.preventDefault();
-  const file = document.getElementById('modFile').files[0];
-  if (!file) return;
-  statusEl.textContent = '上传并分析中...';
+  const files = [...document.getElementById('modFile').files];
+  if (!files.length) return;
+  statusEl.textContent = `上传并分析中（${files.length} 个文件）...`;
   resultsEl.innerHTML = '';
   summaryEl.innerHTML = '';
   categoryStats.innerHTML = '';
   auditDashboard.innerHTML = '';
   iconRenderStatsEl.innerHTML = '';
+  if (dependencyDashboard) dependencyDashboard.innerHTML = '';
+  if (jumpBar) { jumpBar.hidden = true; jumpBar.innerHTML = ''; }
+  jumpBackState = null;
   if (suspiciousOnly) suspiciousOnly.checked = false;
   if (downloadAnalysis) { downloadAnalysis.href = '#'; downloadAnalysis.style.display = 'none'; }
   const fd = new FormData();
-  fd.append('mod', file);
+  for (const f of files) fd.append('mods', f);
   fd.append('mcVersion', mcVersionSelect.value || '1.21.1');
   const vjar = vanillaJarInput.value.trim();
   if (vjar) fd.append('vanillaJar', vjar);
@@ -79,8 +86,9 @@ form.addEventListener('submit', async (e) => {
     const res = await fetch('/api/analyze', { method: 'POST', body: fd });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || '分析失败');
-    statusEl.textContent = `完成：${data.recipeCount} 个配方`;
-    summaryEl.innerHTML = `<div><b>文件</b>: ${esc(data.modFile)}</div><div><b>版本</b>: ${esc(data.mcVersion || '')}</div><div><b>配方数</b>: ${data.recipeCount}</div><div><b>Vanilla fallback</b>: ${data.vanillaLoaded ? esc(data.vanillaJar || 'loaded') : '未加载（minecraft 图标可能缺失）'}</div>`;
+    statusEl.textContent = `完成：${files.length} 个文件 / ${data.recipeCount} 个配方`;
+    const fileList = (data.modFiles || [data.modFile]).filter(Boolean).join(', ');
+    summaryEl.innerHTML = `<div><b>文件</b>: ${esc(fileList)}</div><div><b>版本</b>: ${esc(data.mcVersion || '')}</div><div><b>配方数</b>: ${data.recipeCount}</div><div><b>Vanilla fallback</b>: ${data.vanillaLoaded ? esc(data.vanillaJar || 'loaded') : '未加载（minecraft 图标可能缺失）'}</div>`;
     const ares = await fetch(data.analysisUrl);
     const analysis = await ares.json();
     allRecipes = analysis.recipes || [];
@@ -89,6 +97,7 @@ form.addEventListener('submit', async (e) => {
     buildCategoryFilter(analysis.summary?.categories || {});
     renderAudit(analysis.summary?.coverage);
     renderIconRenderStats(analysis.summary?.iconRenderStats);
+    renderDependencies(analysis.summary?.dependencies);
     if (downloadAnalysis && currentAnalysisUrl) {
       downloadAnalysis.href = currentAnalysisUrl;
       downloadAnalysis.download = `${(data.modFile || 'analysis').replace(/\.(jar|zip)$/i, '')}-analysis.json`;
@@ -106,6 +115,52 @@ if (acqFilter) acqFilter.addEventListener('change', render);
 if (suspiciousOnly) suspiciousOnly.addEventListener('change', render);
 searchInput.addEventListener('input', render);
 if (exportSuspicious) exportSuspicious.addEventListener('click', exportSuspiciousCsv);
+
+// 点卡片里的任意物品图标 → 清空筛选 → 搜索该物品 → 滚动到结果区（伪跳转）。
+resultsEl.addEventListener('click', (e) => {
+  const el = e.target.closest('[data-jump-id], [data-jump-name]');
+  if (!el) return;
+  const term = el.dataset.jumpId || el.dataset.jumpName;
+  if (!term) return;
+  jumpToItem(term, el.dataset.jumpName || el.dataset.jumpId || term);
+});
+
+function jumpToItem(term, label) {
+  // 只有首次跳转才保存原状态；连续点图标不会把「返回」目标覆盖成中间态。
+  if (!jumpBackState) {
+    jumpBackState = {
+      cat: categoryFilter?.value || '',
+      acq: acqFilter?.value || '',
+      sus: suspiciousOnly?.checked || false,
+      q: searchInput.value,
+    };
+  }
+  if (categoryFilter) categoryFilter.value = '';
+  if (acqFilter) acqFilter.value = '';
+  if (suspiciousOnly) suspiciousOnly.checked = false;
+  searchInput.value = term;
+  render();
+  if (jumpBar) {
+    jumpBar.hidden = false;
+    jumpBar.innerHTML = `<span>正在查看：<b>${esc(label)}</b></span><button type="button" class="btn-small" id="jumpBack">返回原搜索</button>`;
+    document.getElementById('jumpBack')?.addEventListener('click', restoreJump);
+  }
+  resultsEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function restoreJump() {
+  if (jumpBackState) {
+    if (categoryFilter) categoryFilter.value = jumpBackState.cat;
+    if (acqFilter) acqFilter.value = jumpBackState.acq;
+    if (suspiciousOnly) suspiciousOnly.checked = jumpBackState.sus;
+    searchInput.value = jumpBackState.q;
+    jumpBackState = null;
+  } else {
+    searchInput.value = '';
+  }
+  if (jumpBar) { jumpBar.hidden = true; jumpBar.innerHTML = ''; }
+  render();
+}
 
 function renderAudit(coverage) {
   if (!coverage) { auditDashboard.innerHTML = '<div class="empty">无覆盖率数据</div>'; return; }
@@ -136,6 +191,28 @@ function renderIconRenderStats(s) {
       <div class="audit-metric ${degraded ? 'metric-warn' : ''}"><div class="audit-metric-label">复杂结构退 2D</div><div class="audit-metric-value">${degraded}</div></div>
       <div class="audit-metric"><div class="audit-metric-label">无 items 映射</div><div class="audit-metric-value">${s.itemModelMappingMissing ?? 0}</div></div>
     </div>`;
+}
+
+function renderDependencies(d) {
+  if (!dependencyDashboard) return;
+  if (!d) { dependencyDashboard.innerHTML = '<div class="empty">无依赖归类数据</div>'; return; }
+  const ext = d.externalNamespaces || [];
+  const extList = ext.length
+    ? `<div class="dep-list">${ext.map(n => `<div class="dep-item"><span class="dep-ns">${esc(n.namespace)}</span><span class="dep-refs">${n.refs} 处引用</span>${n.examples?.length ? `<span class="dep-examples">${esc(n.examples.slice(0, 3).join(', '))}</span>` : ''}</div>`).join('')}</div>`
+    : '<div class="audit-ok">✓ 未发现外部依赖——所有引用都在本次上传的 mod 或原版内。</div>';
+  const registry = d.registry || [];
+  const modList = registry.length
+    ? `<details class="dep-registry"><summary>本次识别到 ${registry.length} 个命名空间（命名空间 → 模组）</summary><div class="dep-list">${registry.map(n => `<div class="dep-item"><b>${esc(n.namespace)}</b> → ${esc(n.modName)}${n.specific ? '' : '（推断）'}</div>`).join('')}</div></details>`
+    : '';
+  dependencyDashboard.innerHTML = `
+    <div class="audit-grid">
+      <div class="audit-metric"><div class="audit-metric-label">原版引用</div><div class="audit-metric-value">${d.vanillaRefs ?? 0}</div></div>
+      <div class="audit-metric"><div class="audit-metric-label">内部引用</div><div class="audit-metric-value">${d.internalRefs ?? 0}<span class="audit-metric-sub"> / ${d.internalNamespaces ?? 0} 个命名空间</span></div></div>
+      <div class="audit-metric ${ext.length ? 'metric-warn' : ''}"><div class="audit-metric-label">外部依赖</div><div class="audit-metric-value">${d.externalRefs ?? 0}<span class="audit-metric-sub"> / ${ext.length} 个命名空间</span></div></div>
+    </div>
+    <h3 class="audit-subtitle">外部依赖清单 <span class="audit-subtitle-note">（不算解析失败）</span></h3>
+    ${extList}
+    ${modList}`;
 }
 
 const REASON_LABELS = {
@@ -190,7 +267,17 @@ function render() {
     if (acq && (r.acquisition || 'recipe') !== acq) return false;
     if (onlySus && !r.parseQuality?.suspicious) return false;
     if (!q) return true;
-    const hay = [r.result?.name, r.result?.id, r.type, r.recipeCategory, r.classification?.category, r.sourceFile, r.acquisition, ...(r.notes||[]), ...(r.advancements||[]).map(a=>a.title||a.description||'')].filter(Boolean).join(' ').toLowerCase();
+    const hayParts = [r.result?.name, r.result?.id, r.type, r.recipeCategory, r.classification?.category, r.sourceFile, r.acquisition, ...(r.notes||[]), ...(r.advancements||[]).map(a=>a.title||a.description||'')];
+    // 材料也纳入搜索范围：点材料图标跳转时，才能找到「用到它」的配方。
+    const addIngTerms = (ing) => {
+      if (!ing) return;
+      if (ing.name) hayParts.push(ing.name);
+      if (ing.id) hayParts.push(ing.id);
+      if (Array.isArray(ing.options)) ing.options.forEach(addIngTerms);
+    };
+    (r.ingredients || []).forEach(addIngTerms);
+    (r.grid || []).forEach(row => (row || []).forEach(addIngTerms));
+    const hay = hayParts.filter(Boolean).join(' ').toLowerCase();
     return hay.includes(q);
   });
 
@@ -220,7 +307,11 @@ function renderRecipe(r) {
   const cls = r.classification?.category || '未知';
   const showResult = (result && result.cycle && result.options?.length) ? { ...result, kind:'tag', id: result.id, name: result.name, options: result.options, cycle: true } : result;
   node.querySelector('.result-slot').appendChild(slotContent(showResult, result?.count || 1, 40));
-  node.querySelector('.result-name').textContent = (result?.name || '(无产物/未知)') + (r.variantCount ? ` [${r.variantCount}变体]` : '');
+  // 站点差异（熔炉/高炉）是「获取方式」，不是产物变体；颜色等才是变体。
+  const variantSuffix = r.variantCount
+    ? ` [${r.variantCount}${r.variantKind === 'station' ? '种获取方式' : '变体'}]`
+    : '';
+  node.querySelector('.result-name').textContent = (result?.name || '(无产物/未知)') + variantSuffix;
   node.querySelector('.result-id').textContent = result?.id || r.type || '';
   const tags = node.querySelector('.tags');
   addTag(tags, cls, cls === '未知' ? 'unknown' : '');
@@ -382,6 +473,32 @@ function renderRecipe(r) {
   return node;
 }
 
+// 点图标伪跳转到该物品的搜索：tag / 变体 / 可选项没有唯一物品，取第一个具体选项。
+function jumpTargetFor(ing) {
+  if (!ing) return null;
+  if (Array.isArray(ing.options) && ing.options.length) return jumpTargetFor(ing.options[0]) || ing;
+  if (ing.id || ing.name) return { id: ing.id || '', name: ing.name || '' };
+  return null;
+}
+// 原版物品/标签（minecraft: 或无命名空间，含 #minecraft:xxx）不跳转：
+// 它们几乎出现在每个配方里，搜出来没有意义。口径与后端 namespaces.js 一致。
+function isVanillaId(id) {
+  if (!id || typeof id !== 'string') return false;
+  const raw = id.startsWith('#') ? id.slice(1) : id;
+  const ns = raw.includes(':') ? raw.split(':')[0] : 'minecraft';
+  return ns === 'minecraft';
+}
+function markJumpable(el, ing) {
+  const t = jumpTargetFor(ing);
+  if (!el || !t || (!t.id && !t.name)) return el;
+  if (isVanillaId(t.id)) return el;
+  el.dataset.jumpId = t.id;
+  el.dataset.jumpName = t.name;
+  el.classList.add('jumpable');
+  el.title = `${el.title || t.name || t.id || ''} · 点击搜索此物品`;
+  return el;
+}
+
 function slotContent(ing, count=1, size=32) {
   const frag = document.createDocumentFragment();
   if (!ing) return frag;
@@ -407,7 +524,7 @@ function slotContent(ing, count=1, size=32) {
     badge.textContent = ing.kind === 'tag' ? '#' : '↻';
     badge.title = ing.name || ing.id || 'variants';
     wrap.appendChild(badge);
-    frag.appendChild(wrap);
+    frag.appendChild(markJumpable(wrap, ing));
     startCycle(inner, ing.options, size, ing.name || ing.id || 'variants');
     if (count && count > 1) {
       const c = document.createElement('span');
@@ -424,12 +541,12 @@ function slotContent(ing, count=1, size=32) {
     canvas.className = 'model3d';
     canvas.__model3d = ing.model3d;
     canvas.__fallback = { icon: ing.icon, ing, size };
-    frag.appendChild(canvas);
+    frag.appendChild(markJumpable(canvas, ing));
     observe3D(canvas);
   } else if (ing.icon) {
     frag.appendChild(iconImg(ing.icon, ing, size));
   } else {
-    frag.appendChild(textPlaceholder(ing, size));
+    frag.appendChild(markJumpable(textPlaceholder(ing, size), ing));
   }
 
   if (count && count > 1) {
@@ -444,8 +561,8 @@ function iconImg(src, ing, size) {
   const img = document.createElement('img');
   img.src = src; img.alt = ing.name || ing.id || ''; img.loading = 'lazy';
   img.style.width = size+'px'; img.style.height = size+'px';
-  img.onerror = () => { img.replaceWith(textPlaceholder(ing)); };
-  return img;
+  img.onerror = () => { img.replaceWith(markJumpable(textPlaceholder(ing), ing)); };
+  return markJumpable(img, ing);
 }
 
 function textPlaceholder(ing, size=32) {

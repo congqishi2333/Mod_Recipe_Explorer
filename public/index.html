@@ -10,16 +10,16 @@
   <header class="topbar">
     <div>
       <h1>合成表分析器 <span class="badge">Java Edition · 多版本 · 批量审计</span></h1>
-      <p class="sub">上传 mod jar/zip，自动解析配方、提取图标、渲染 3x3 合成表并分类。面向整合包作者 / 服主 / 批量配方审计。</p>
+      <p class="sub">上传 mod jar/zip（可多选，支持整包分析），自动解析配方、提取图标、渲染 3x3 合成表并分类。面向整合包作者 / 服主 / 批量配方审计。</p>
     </div>
   </header>
 
   <main class="layout">
     <section class="panel upload-panel">
-      <h2>1. 上传 Mod</h2>
+      <h2>1. 上传 Mod（可多选）</h2>
       <form id="uploadForm">
-        <label class="field">Mod 文件
-          <input id="modFile" type="file" name="mod" accept=".jar,.zip" required />
+        <label class="field">Mod 文件（可多选，一次分析整个整合包）
+          <input id="modFile" type="file" name="mods" accept=".jar,.zip" multiple required />
         </label>
         <label class="field">Minecraft 版本
           <select id="mcVersion" name="mcVersion"></select>
@@ -73,8 +73,15 @@
       <p class="audit-note">静态解析：仅统计 jar 内配方 JSON，<b>不含 KubeJS / CraftTweaker 等运行时脚本动态注册的配方</b>。可疑项不代表一定错误，仅提示需人工核对。</p>
     </section>
 
+    <section class="panel deps-panel">
+      <h2>依赖归类（命名空间 → 模组）</h2>
+      <div id="dependencyDashboard" class="audit-dashboard"><div class="empty">分析完成后显示内部引用 / 外部依赖统计。</div></div>
+      <p class="audit-note">从本次上传 jar 的元数据与资源路径收集命名空间。<b>外部依赖不算解析失败</b>——它只是本次没上传对应 mod 的合法跨模组引用。模组名来自 fabric.mod.json / mods.toml / mcmod.info。</p>
+    </section>
+
     <section class="panel results-panel">
       <h2>3. 配方</h2>
+      <div id="jumpBar" class="jump-bar" hidden></div>
       <div id="results" class="results"></div>
     </section>
   </main>
