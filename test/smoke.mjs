@@ -7,6 +7,8 @@ import zlib from 'zlib';
 import { renderModel3DToPng, getRenderStats } from '../lib/render3d.js';
 import { buildAssetIndex, resolveItemRender, resolveFullModel, expandTag } from '../lib/assets.js';
 import { readZipEntries, getJson } from '../lib/zip.js';
+import { collectRecipes } from '../lib/recipes.js';
+import { analyzeModJar } from '../lib/analyzer.js';
 import { SUPPORTED_VERSIONS, LATEST_VERSION, DEFAULT_VERSION, normalizeMcVersion } from '../lib/versions.js';
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ra-smoke-'));
@@ -264,6 +266,53 @@ check('空值回退默认', normalizeMcVersion('') === DEFAULT_VERSION);
 let badRejected = false;
 try { normalizeMcVersion('../../etc/passwd'); } catch (e) { badRejected = e.status === 400; }
 check('路径穿越被拒绝', badRejected);
+
+console.log('\n[12] 审计仪表：解析统计与可疑标记');
+{
+  const j = (o) => Buffer.from(JSON.stringify(o), 'utf8');
+  const files = [
+    ['data/testmod/recipe/good.json', j({
+      type: 'minecraft:crafting_shaped',
+      pattern: ['XX'], key: { X: { item: 'minecraft:iron_ingot' } },
+      result: { id: 'minecraft:iron_block' },
+    })],
+    ['data/testmod/recipe/zero_input.json', j({
+      type: 'testmod:opaque', result: { id: 'testmod:thing' },
+    })],
+    ['data/testmod/recipe/unknown_ing.json', j({
+      type: 'testmod:mystery', ingredient: { mystery: 'foo' }, result: { id: 'testmod:bar' },
+    })],
+    ['data/testmod/recipe/fake_advancement.json', j({
+      criteria: { root: { trigger: 'minecraft:tick' } },
+    })],
+    ['data/testmod/recipe/broken.json', Buffer.from('not json', 'utf8')],
+  ];
+  const zip2 = path.join(tmp, 'audit.zip');
+  fs.writeFileSync(zip2, makeZip(files));
+  const stats = {};
+  const parsed = collectRecipes(readZipEntries(zip2).entries, stats);
+  check('扫描数 = 配方路径下全部 JSON', stats.recipeFilesScanned === 5, `scanned=${stats.recipeFilesScanned}`);
+  check('有效 JSON 被解析', stats.recipesParsed === 3, `parsed=${stats.recipesParsed}`);
+  check('坏 JSON 被计数', stats.invalidJsonFiles === 1, `invalid=${stats.invalidJsonFiles}`);
+  check('伪造成就被跳过并计数', stats.advancementFilesSkipped === 1, `skipped=${stats.advancementFilesSkipped}`);
+  check('未知类型被计数', stats.unknownTypeRecipes === 1, `unknownType=${stats.unknownTypeRecipes}`);
+  check('collectRecipes 返回 3 条', parsed.length === 3, `returned=${parsed.length}`);
+
+  const outDir = path.join(tmp, 'audit-out');
+  fs.mkdirSync(outDir, { recursive: true });
+  const analysis = await analyzeModJar(zip2, outDir, { mcVersion: '1.21.1' });
+  const cov = analysis.summary.coverage;
+  check('summary.coverage 存在', !!cov);
+  check('coverage 含扫描/解析/可疑数', cov.recipeFilesScanned === 5 && cov.recipesParsed === 3 && cov.suspiciousRecipes === 2,
+    `scan=${cov.recipeFilesScanned} parsed=${cov.recipesParsed} suspicious=${cov.suspiciousRecipes}`);
+  const byFile = Object.fromEntries(analysis.recipeEntries.map(r => [path.basename(r.sourceFile), r]));
+  check('正常配方不可疑', byFile['good.json']?.parseQuality?.suspicious === false);
+  check('零输入被标记', byFile['zero_input.json']?.parseQuality?.reasons?.includes('zero-input') === true);
+  check('未知类型被标记', byFile['zero_input.json']?.parseQuality?.reasons?.includes('unknown-recipe-type') === true);
+  check('未知材料被标记', byFile['unknown_ing.json']?.parseQuality?.reasons?.includes('unknown-ingredient') === true);
+  check('可疑原因汇总含 zero-input', (cov.suspiciousReasons?.['zero-input'] || 0) === 1, JSON.stringify(cov.suspiciousReasons));
+  check('每条分析记录带 parseQuality', analysis.recipeEntries.every(r => r.parseQuality && typeof r.parseQuality.suspicious === 'boolean'));
+}
 
 console.log(`\n结果: ${pass} PASS / ${fail} FAIL\n`);
 process.exit(fail ? 1 : 0);
