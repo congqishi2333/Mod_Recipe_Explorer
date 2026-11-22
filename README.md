@@ -38,7 +38,7 @@ npm start
 | 字段 | 含义 |
 |---|---|
 | `recipeFilesScanned` | `data/**/recipe(s)/` 下 JSON 文件总数 |
-| `recipesParsed` / `parseRate` | 成功解析数 / 解析率 |
+| `recipesParsed` / `parseRate` | 成功解析数 / 解析率（分母已剔除 `advancement/recipes/` 等非配方文件） |
 | `invalidJsonFiles` | JSON 解析失败数 |
 | `advancementFilesSkipped` | 位于配方路径但实为进度的文件数 |
 | `unknownTypeRecipes` / `inferredRecipes` | 未知类型数 / 启发式推断数 |

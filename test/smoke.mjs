@@ -305,6 +305,7 @@ console.log('\n[12] 审计仪表：解析统计与可疑标记');
   check('summary.coverage 存在', !!cov);
   check('coverage 含扫描/解析/可疑数', cov.recipeFilesScanned === 5 && cov.recipesParsed === 3 && cov.suspiciousRecipes === 2,
     `scan=${cov.recipeFilesScanned} parsed=${cov.recipesParsed} suspicious=${cov.suspiciousRecipes}`);
+  check('parseRate 分母剔除 advancement 文件', cov.parseRate === 0.75, `parseRate=${cov.parseRate}`);
   const byFile = Object.fromEntries(analysis.recipeEntries.map(r => [path.basename(r.sourceFile), r]));
   check('正常配方不可疑', byFile['good.json']?.parseQuality?.suspicious === false);
   check('零输入被标记', byFile['zero_input.json']?.parseQuality?.reasons?.includes('zero-input') === true);
