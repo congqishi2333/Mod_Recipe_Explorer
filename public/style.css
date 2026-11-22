@@ -89,6 +89,8 @@ button:hover{background:#3f6832}
 /* 审计 / 覆盖率仪表 */
 .checkbox-label.inline{flex-direction:row;align-items:center;justify-content:flex-start;align-self:flex-end;padding-bottom:7px;font-size:13px}
 .audit-dashboard{min-height:44px}
+.audit-subtitle{margin:14px 0 8px;font-size:14px;color:#d9ffd0;font-weight:600}
+.audit-subtitle-note{font-size:12px;color:var(--muted);font-weight:400}
 .audit-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px}
 .audit-metric{background:#161616;border:1px solid var(--line);border-radius:8px;padding:10px 12px}
 .audit-metric-label{font-size:12px;color:var(--muted)}

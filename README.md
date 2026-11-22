@@ -54,6 +54,30 @@ npm start
 
 可疑 ≠ 一定错误，仅提示人工核对。CLI / CI 可直接读 `summary.coverage` 做阈值检查。
 
+## 1.21.4 物品模型映射：验收基线
+
+样本为本机 **1.21.11 原版 client jar**。静态统计 `assets/minecraft/items/*.json` 共 **1505** 个映射：
+
+| `model.type` | 数量 | 占比 |
+|---|---|---|
+| `minecraft:model`（直取） | 1358 | 90.2% |
+| `minecraft:select` | 71 | 4.7% |
+| `minecraft:special` | 67 | 4.5% |
+| `minecraft:condition` | 7 | 0.5% |
+| `minecraft:range_dispatch` | 2 | 0.1% |
+| **复杂结构合计（按设计退 2D）** | **147** | **9.77%** |
+
+对同一 jar 跑完整分析（1470 条配方），`summary.iconRenderStats` 实测：
+
+- `itemModelMappingHit`: **1048**
+- `itemModelMappingFallback2D`: **136**（占已覆盖映射的 11.5%）
+- `itemModelMappingMissing`: **26**
+
+这里的 ~9.8%（数据层）/ 11.5%（实际解析层）就是本步明确接受的降级面。
+这些计数属于**渲染侧**，和 `summary.coverage`（配方解析质量）分开统计、不合并。
+后续若要缩小降级面，只能实现 `condition` / `select` / `range_dispatch` 的语义，
+**不能**用「取第一个分支」糊过去——那会渲染出错误模型，属于静默错，宁可退 2D。
+
 ## 说明与限制
 - 支持 1.21.1+ Java Edition 常见数据结构；核心解析按结构特征兼容而非按版本号分支。新版若出现全新配方 schema，遇到后再在 `lib/recipes.js` 的 normalize 层补充即可。
 - **仅静态解析 jar 内的配方 JSON**：不含 KubeJS / CraftTweaker 等运行时脚本动态注册的配方，也不具备 JEI/EMI 运行时插件能力。审计时请把覆盖率当作「静态可提取部分」的指标。

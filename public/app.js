@@ -11,6 +11,7 @@ const mcVersionSelect = document.getElementById('mcVersion');
 const includeVanillaEquivalentsInput = document.getElementById('includeVanillaEquivalents');
 const suspiciousOnly = document.getElementById('suspiciousOnly');
 const auditDashboard = document.getElementById('auditDashboard');
+const iconRenderStatsEl = document.getElementById('iconRenderStats');
 const exportSuspicious = document.getElementById('exportSuspicious');
 const downloadAnalysis = document.getElementById('downloadAnalysis');
 const tpl = document.getElementById('recipeTpl');
@@ -65,6 +66,7 @@ form.addEventListener('submit', async (e) => {
   summaryEl.innerHTML = '';
   categoryStats.innerHTML = '';
   auditDashboard.innerHTML = '';
+  iconRenderStatsEl.innerHTML = '';
   if (suspiciousOnly) suspiciousOnly.checked = false;
   if (downloadAnalysis) { downloadAnalysis.href = '#'; downloadAnalysis.style.display = 'none'; }
   const fd = new FormData();
@@ -86,6 +88,7 @@ form.addEventListener('submit', async (e) => {
     currentAnalysisUrl = data.analysisUrl || '';
     buildCategoryFilter(analysis.summary?.categories || {});
     renderAudit(analysis.summary?.coverage);
+    renderIconRenderStats(analysis.summary?.iconRenderStats);
     if (downloadAnalysis && currentAnalysisUrl) {
       downloadAnalysis.href = currentAnalysisUrl;
       downloadAnalysis.download = `${(data.modFile || 'analysis').replace(/\.(jar|zip)$/i, '')}-analysis.json`;
@@ -122,6 +125,17 @@ function renderAudit(coverage) {
     ${warn
       ? `<div class="audit-warning">⚠ 有 ${coverage.suspiciousRecipes} 条配方解析存疑（零输入 / 未知材料 / 无产物 / 未知类型）。已标红，勾选「只看可疑」可定位核对。</div>`
       : '<div class="audit-ok">✓ 未发现明显解析异常。</div>'}`;
+}
+
+function renderIconRenderStats(s) {
+  if (!s) { iconRenderStatsEl.innerHTML = '<div class="empty">无图标渲染统计</div>'; return; }
+  const degraded = s.itemModelMappingFallback2D || 0;
+  iconRenderStatsEl.innerHTML = `
+    <div class="audit-grid">
+      <div class="audit-metric"><div class="audit-metric-label">items 映射直取成功</div><div class="audit-metric-value">${s.itemModelMappingHit ?? 0}</div></div>
+      <div class="audit-metric ${degraded ? 'metric-warn' : ''}"><div class="audit-metric-label">复杂结构退 2D</div><div class="audit-metric-value">${degraded}</div></div>
+      <div class="audit-metric"><div class="audit-metric-label">无 items 映射</div><div class="audit-metric-value">${s.itemModelMappingMissing ?? 0}</div></div>
+    </div>`;
 }
 
 const REASON_LABELS = {

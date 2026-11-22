@@ -314,5 +314,42 @@ console.log('\n[12] 审计仪表：解析统计与可疑标记');
   check('每条分析记录带 parseQuality', analysis.recipeEntries.every(r => r.parseQuality && typeof r.parseQuality.suspicious === 'boolean'));
 }
 
+console.log('\n[13] 1.21.4 items 映射：直取 / 复杂结构退 2D / 独立计数');
+{
+  const j = (o) => Buffer.from(JSON.stringify(o), 'utf8');
+  const files = [
+    ['assets/testmod/items/normal_block.json',
+      j({ model: { type: 'minecraft:model', model: 'testmod:block/normal_block' } })],
+    ['assets/testmod/models/block/normal_block.json',
+      j({ parent: 'minecraft:block/cube_all', textures: { all: 'testmod:block/normal_block' } })],
+    ['assets/testmod/items/conditional.json',
+      j({ model: { type: 'minecraft:condition', property: 'minecraft:custom_model_data',
+        if_true: { type: 'minecraft:model', model: 'testmod:block/normal_block' },
+        if_false: { type: 'minecraft:model', model: 'testmod:block/normal_block' } } })],
+    ['assets/testmod/models/item/conditional.json',
+      j({ parent: 'minecraft:item/generated', textures: { layer0: 'testmod:item/conditional' } })],
+    ['assets/testmod/models/item/legacy_item.json',
+      j({ parent: 'minecraft:item/generated', textures: { layer0: 'testmod:item/legacy' } })],
+  ];
+  const zip3 = path.join(tmp, 'items-map.zip');
+  fs.writeFileSync(zip3, makeZip(files));
+  const ent3 = readZipEntries(zip3).entries;
+  const idx3 = buildAssetIndex(ent3, null);
+  check('items 映射索引建立', idx3.itemModelMappings.has('testmod:normal_block') && idx3.itemModelMappings.has('testmod:conditional'));
+
+  const before = getRenderStats();
+  const r1 = resolveItemRender('testmod:normal_block', idx3, ent3, null, new Map());
+  const r2 = resolveItemRender('testmod:conditional', idx3, ent3, null, new Map());
+  const r3 = resolveItemRender('testmod:legacy_item', idx3, ent3, null, new Map());
+  const after = getRenderStats();
+  check('minecraft:model 直取走 3D', r1.mode === '3d', r1.mode);
+  check('condition 复杂结构退 2D（不猜分支）', r2.mode === '2d', r2.mode);
+  check('无 items 映射走旧链路', r3.mode === '2d', r3.mode);
+  check('hit 计数 +1', after.itemModelMappingHit - before.itemModelMappingHit === 1);
+  check('fallback2D 计数 +1', after.itemModelMappingFallback2D - before.itemModelMappingFallback2D === 1);
+  check('missing 计数 +1', after.itemModelMappingMissing - before.itemModelMappingMissing === 1);
+  check('解析质量口径未被渲染降级污染', after.suspiciousRecipes === undefined && after.parseQuality === undefined);
+}
+
 console.log(`\n结果: ${pass} PASS / ${fail} FAIL\n`);
 process.exit(fail ? 1 : 0);

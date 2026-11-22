@@ -64,6 +64,8 @@
     <section class="panel audit-panel">
       <h2>解析质量 / 覆盖率（审计）</h2>
       <div id="auditDashboard" class="audit-dashboard"><div class="empty">分析完成后显示覆盖率与可疑项统计。</div></div>
+      <h3 class="audit-subtitle">图标渲染降级 <span class="audit-subtitle-note">（独立于配方解析质量，不合并计数）</span></h3>
+      <div id="iconRenderStats" class="audit-dashboard"></div>
       <div class="audit-actions">
         <button id="exportSuspicious" type="button" class="btn-small">导出可疑配方 CSV</button>
         <a id="downloadAnalysis" class="btn-small" href="#" download style="display:none">下载完整 analysis.json</a>
