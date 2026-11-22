@@ -9,6 +9,7 @@ import { buildAssetIndex, resolveItemRender, resolveFullModel, expandTag } from 
 import { readZipEntries, getJson } from '../lib/zip.js';
 import { collectRecipes } from '../lib/recipes.js';
 import { analyzeModJar } from '../lib/analyzer.js';
+import { buildNamespaceRegistry, classifyId } from '../lib/namespaces.js';
 import { SUPPORTED_VERSIONS, LATEST_VERSION, DEFAULT_VERSION, normalizeMcVersion } from '../lib/versions.js';
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ra-smoke-'));
@@ -350,6 +351,94 @@ console.log('\n[13] 1.21.4 items 映射：直取 / 复杂结构退 2D / 独立�
   check('fallback2D 计数 +1', after.itemModelMappingFallback2D - before.itemModelMappingFallback2D === 1);
   check('missing 计数 +1', after.itemModelMappingMissing - before.itemModelMappingMissing === 1);
   check('解析质量口径未被渲染降级污染', after.suspiciousRecipes === undefined && after.parseQuality === undefined);
+}
+
+console.log('\n[14] 命名空间 → 模组表：多 jar 合并 / 元数据 / 外部依赖不算解析失败');
+{
+  const j = (o) => Buffer.from(JSON.stringify(o), 'utf8');
+  const jarA = path.join(tmp, 'ns-a.jar');
+  fs.writeFileSync(jarA, makeZip([
+    ['fabric.mod.json', j({ id: 'moda', name: 'Mod A' })],
+    ['assets/moda/models/item/part.json', j({ parent: 'minecraft:item/generated', textures: { layer0: 'minecraft:iron_ingot' } })],
+    ['data/moda/recipe/a.json', j({
+      type: 'minecraft:crafting_shaped', pattern: ['X'],
+      key: { X: { item: 'minecraft:iron_ingot' } },
+      result: { id: 'moda:part' },
+    })],
+  ]));
+  const jarB = path.join(tmp, 'ns-b.jar');
+  fs.writeFileSync(jarB, makeZip([
+    ['META-INF/neoforge.mods.toml', Buffer.from('modLoader="javafml"\n[[mods]]\nmodId="modb"\ndisplayName="Mod B"\nversion="1"\n', 'utf8')],
+    ['data/modb/recipe/b.json', j({
+      type: 'minecraft:crafting_shaped', pattern: ['X'],
+      key: { X: { item: 'externalmod:widget' } },
+      result: { id: 'modb:thing' },
+    })],
+  ]));
+  const jarC = path.join(tmp, 'ns-c.jar');
+  fs.writeFileSync(jarC, makeZip([
+    ['mcmod.info', j([{ modid: 'modc', name: 'Mod C' }])],
+    ['assets/modc/models/item/x.json', j({ parent: 'minecraft:item/generated', textures: { layer0: 'minecraft:stone' } })],
+  ]));
+
+  const reg = buildNamespaceRegistry([
+    { jarPath: jarA, entries: readZipEntries(jarA).entries },
+    { jarPath: jarB, entries: readZipEntries(jarB).entries },
+    { jarPath: jarC, entries: readZipEntries(jarC).entries },
+  ]);
+  check('Fabric fabric.mod.json → 模组名', reg.get('moda')?.modName === 'Mod A');
+  check('NeoForge mods.toml → 模组名', reg.get('modb')?.modName === 'Mod B');
+  check('老 Forge mcmod.info → 模组名', reg.get('modc')?.modName === 'Mod C');
+  check('minecraft 不进注册表（原版单独归类）', !reg.has('minecraft'));
+  check('minecraft id → vanilla', classifyId('minecraft:stone', reg).kind === 'vanilla');
+  check('已上传 mod id → internal', classifyId('moda:part', reg).kind === 'internal');
+  check('未上传 mod id → external', classifyId('externalmod:widget', reg).kind === 'external');
+  check('tag id 也按命名空间归类', classifyId('#moda:parts', reg).kind === 'internal');
+
+  const outDir = path.join(tmp, 'ns-analysis');
+  fs.mkdirSync(outDir, { recursive: true });
+  const result = await analyzeModJar([jarA, jarB, jarC], outDir, { mcVersion: '1.21.1' });
+  const deps = result.summary.dependencies;
+  check('多 jar 合并后 modFiles 列全量', result.summary.modFiles?.length === 3);
+  check('多 jar 合并后配方来自两个 jar', result.summary.recipeCount === 2, String(result.summary.recipeCount));
+  check('summary.dependencies 存在', !!deps);
+  check('模组名来自元数据精确匹配（非推断）', deps.registry.find(n => n.namespace === 'moda')?.specific === true);
+  check('外部依赖命名空间被识别', deps.externalNamespaces.some(n => n.namespace === 'externalmod'),
+    JSON.stringify(deps.externalNamespaces.map(n => n.namespace)));
+  check('外部依赖不算解析失败', result.summary.coverage.suspiciousRecipes === 0,
+    JSON.stringify(result.summary.coverage.suspiciousReasons));
+  check('外部依赖不进 parseQuality.reasons', result.recipeEntries.every(r => !(r.parseQuality?.reasons || []).includes('external-dependency')));
+  check('外部依赖 id 单独归档', result.recipeEntries.some(r => r.dependencyRefs?.external.includes('externalmod:widget')));
+  check('内部引用 id 单独归档', result.recipeEntries.some(r => r.dependencyRefs?.internal.some(x => x.startsWith('moda:') || x.startsWith('modb:'))));
+  check('原版引用 id 单独归档', result.recipeEntries.some(r => r.dependencyRefs?.vanilla.includes('minecraft:iron_ingot')));
+}
+
+console.log('\n[15] 烹饪站点变体：标记为获取方式差异，站点列表不虚增');
+{
+  const j = (o) => Buffer.from(JSON.stringify(o), 'utf8');
+  const zip4 = path.join(tmp, 'cook-variants.zip');
+  fs.writeFileSync(zip4, makeZip([
+    ['data/testmod/recipe/ingot_smelting.json', j({
+      type: 'minecraft:smelting', ingredient: { item: 'minecraft:iron_ore' },
+      result: 'minecraft:iron_ingot',
+    })],
+    ['data/testmod/recipe/ingot_blasting.json', j({
+      type: 'minecraft:blasting', ingredient: { item: 'minecraft:iron_ore' },
+      result: 'minecraft:iron_ingot',
+    })],
+  ]));
+  const outDir = path.join(tmp, 'cook-out');
+  fs.mkdirSync(outDir, { recursive: true });
+  const analysis = await analyzeModJar(zip4, outDir, { mcVersion: '1.21.1' });
+  const rec = analysis.collapsedRecipes.find(r => r.result?.id === 'minecraft:iron_ingot');
+  check('熔炉/高炉配方被合并为一条', !!rec && rec.variantCount === 2, String(rec?.variantCount));
+  check('变体类型标记为站点差异', rec?.variantKind === 'station', String(rec?.variantKind));
+  check('站点列表只含实际两个炉子', rec?.stations?.length === 2
+    && rec.stations.includes('minecraft:furnace')
+    && rec.stations.includes('minecraft:blast_furnace')
+    && !rec.stations.includes('minecraft:smoker'), JSON.stringify(rec?.stations));
+  check('站点图标数与站点列表一致', rec?.stationItems?.length === rec?.stations?.length);
+  check('未合并的单条配方不带变体类型标记', analysis.recipeEntries.every(r => r.variantKind === undefined));
 }
 
 console.log(`\n结果: ${pass} PASS / ${fail} FAIL\n`);

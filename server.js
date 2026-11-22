@@ -50,7 +50,9 @@ const storage = multer.diskStorage({
 });
 const upload = multer({
   storage,
-  limits: { fileSize: 200 * 1024 * 1024, files: 1 },
+  // 一次最多 50 个 jar，单个上限 200MB；命名空间表由全部 jar 共享，
+  // 才能区分「内部引用」与「外部依赖」。
+  limits: { fileSize: 200 * 1024 * 1024, files: 50 },
   fileFilter: (_req, file, cb) => {
     if (file.originalname.toLowerCase().endsWith('.jar') || file.originalname.toLowerCase().endsWith('.zip')) cb(null, true);
     else cb(new Error('Only .jar/.zip supported'));
@@ -112,17 +114,18 @@ app.get('/api/vanilla-status', (req, res) => {
   });
 });
 
-app.post('/api/analyze', upload.single('mod'), async (req, res) => {
+app.post('/api/analyze', upload.array('mods', 50), async (req, res) => {
   try {
-    if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
-    const outDir = path.join(dataDir, path.parse(req.file.filename).name);
+    const files = req.files || [];
+    if (!files.length) return res.status(400).json({ error: 'No file uploaded' });
+    const outDir = path.join(dataDir, path.parse(files[0].filename).name);
     fs.mkdirSync(outDir, { recursive: true });
     const vanillaJar = safeVanillaJar(req.body?.vanillaJar);
     const mcVersion = normalizeMcVersion(req.body?.mcVersion);
     const includeVanillaEquivalents = req.body?.includeVanillaEquivalents === true
       || req.body?.includeVanillaEquivalents === '1'
       || req.body?.includeVanillaEquivalents === 'true';
-    const result = await analyzeModJar(req.file.path, outDir, {
+    const result = await analyzeModJar(files.map(f => f.path), outDir, {
       mcVersion, vanillaJar, includeVanillaEquivalents,
     });
     res.json({

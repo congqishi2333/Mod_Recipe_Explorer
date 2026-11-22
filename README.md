@@ -54,6 +54,31 @@ npm start
 
 可疑 ≠ 一定错误，仅提示人工核对。CLI / CI 可直接读 `summary.coverage` 做阈值检查。
 
+## 依赖归类（命名空间 → 模组）
+
+一次可上传**多个 jar**（最多 50 个）。所有 jar 的命名空间收集成一张「命名空间 → 模组」表：
+模组名来自 `fabric.mod.json`、`META-INF/mods.toml` / `neoforge.mods.toml`、`mcmod.info`，缺失时回退到命名空间本身。
+
+配方里出现的 `<namespace>:<name>` 按命名空间归档为三类：
+
+| 类别 | 判断依据 | 含义 |
+|---|---|---|
+| `vanilla` | `minecraft:` | 原版，正常 |
+| `internal` | 命名空间在本次上传的 jar 里 | 内部引用，能解析 |
+| `external` | 命名空间不在表里 | 外部依赖，**单独归类，不算解析失败** |
+
+外部依赖是合理的跨模组引用（比如你只上传了 A，A 的配方用了 `create:brass_ingot`），
+不是解析错误。它**不进 `parseQuality.suspicious`**，避免把「没上传依赖 jar」误判成「配方解析失败」。
+
+对应字段：
+
+- `summary.dependencies.registry`：本次识别到的全部命名空间与模组名
+- `summary.dependencies.externalNamespaces`：外部依赖清单（命名空间、引用数、样例 id）
+- `summary.dependencies.vanillaRefs / internalRefs / externalRefs`：三类引用计数
+- 每条配方与每个变体的 `dependencyRefs`：该配方用到的 id 按三类去重归档
+
+`POST /api/analyze` 的字段名是 `mods`（可重复），响应 `modFiles` 列出全部上传文件。
+
 ## 1.21.4 物品模型映射：验收基线
 
 样本为本机 **1.21.11 原版 client jar**。静态统计 `assets/minecraft/items/*.json` 共 **1505** 个映射：
