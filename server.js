@@ -8,6 +8,7 @@ import { fileURLToPath } from 'url';
 import { analyzeModJar, prewarmVanillaRenders, getPrewarmProgress } from './lib/analyzer.js';
 import { findVanillaJar, loadVanillaAssets } from './lib/vanilla.js';
 import { getRenderStats } from './lib/render3d.js';
+import { SUPPORTED_VERSIONS, LATEST_VERSION, DEFAULT_VERSION, normalizeMcVersion } from './lib/versions.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -64,8 +65,12 @@ function sendIfExists(res, p) {
   if (!fs.existsSync(p)) return res.status(404).end();
   res.sendFile(p);
 }
-app.get('/data/vanilla-renders/:file', (req, res) =>
-  sendIfExists(res, path.join(dataDir, 'vanilla-renders', path.basename(req.params.file))));
+app.get('/data/vanilla-renders/:version/:file', (req, res) => {
+  let version;
+  try { version = normalizeMcVersion(req.params.version); }
+  catch { return res.status(404).end(); }
+  sendIfExists(res, path.join(dataDir, 'vanilla-renders', version, path.basename(req.params.file)));
+});
 app.get('/data/:id/analysis.json', (req, res) =>
   sendIfExists(res, path.join(dataDir, idSafe(req.params.id), 'analysis.json')));
 app.get('/data/:id/:kind/:file', (req, res) => {
@@ -75,10 +80,14 @@ app.get('/data/:id/:kind/:file', (req, res) => {
 });
 
 app.get('/api/health', (_req, res) => res.json({ ok: true }));
+app.get('/api/versions', (_req, res) => res.json({
+  versions: SUPPORTED_VERSIONS, latest: LATEST_VERSION, default: DEFAULT_VERSION,
+}));
 
 app.post('/api/prewarm-vanilla', async (req, res) => {
   try {
-    const out = await prewarmVanillaRenders({ mcVersion: req.body?.mcVersion || '1.21.1', vanillaJar: safeVanillaJar(req.body?.vanillaJar) });
+    const mcVersion = normalizeMcVersion(req.body?.mcVersion);
+    const out = await prewarmVanillaRenders({ mcVersion, vanillaJar: safeVanillaJar(req.body?.vanillaJar) });
     res.json(out);
   } catch (e) {
     res.status(e?.status || 500).json({ ok: false, error: String(e?.message || e) });
@@ -86,13 +95,16 @@ app.post('/api/prewarm-vanilla', async (req, res) => {
 });
 
 app.get('/api/vanilla-status', (req, res) => {
-  let explicit;
-  try { explicit = safeVanillaJar(req.query.path); }
-  catch (e) { return res.status(e?.status || 500).json({ ok: false, error: String(e?.message || e) }); }
-  const jarPath = explicit || findVanillaJar('1.21.1');
-  const loaded = loadVanillaAssets('1.21.1', jarPath);
+  let explicit, mcVersion;
+  try {
+    explicit = safeVanillaJar(req.query.path);
+    mcVersion = normalizeMcVersion(req.query.version);
+  } catch (e) { return res.status(e?.status || 500).json({ ok: false, error: String(e?.message || e) }); }
+  const jarPath = explicit || findVanillaJar(mcVersion);
+  const loaded = loadVanillaAssets(mcVersion, jarPath);
   res.json({
     ok: !!loaded.ok,
+    mcVersion,
     jarPath: loaded.jarPath || jarPath || null,
     error: loaded.error || null,
     prewarm: getPrewarmProgress(),
@@ -106,14 +118,16 @@ app.post('/api/analyze', upload.single('mod'), async (req, res) => {
     const outDir = path.join(dataDir, path.parse(req.file.filename).name);
     fs.mkdirSync(outDir, { recursive: true });
     const vanillaJar = safeVanillaJar(req.body?.vanillaJar);
+    const mcVersion = normalizeMcVersion(req.body?.mcVersion);
     const includeVanillaEquivalents = req.body?.includeVanillaEquivalents === true
       || req.body?.includeVanillaEquivalents === '1'
       || req.body?.includeVanillaEquivalents === 'true';
     const result = await analyzeModJar(req.file.path, outDir, {
-      mcVersion: '1.21.1', vanillaJar, includeVanillaEquivalents,
+      mcVersion, vanillaJar, includeVanillaEquivalents,
     });
     res.json({
       ok: true,
+      mcVersion,
       analysisUrl: `/data/${path.basename(outDir)}/analysis.json`,
       ...result.summary,
     });
@@ -131,12 +145,13 @@ app.get('/api/analysis/:id', (req, res) => {
 });
 
 app.listen(PORT, () => {
-  log.info({ port: PORT }, 'recipe-analyzer listening');
-  const v = findVanillaJar('1.21.1');
-  log.info({ jar: v }, v ? 'vanilla jar detected' : 'vanilla jar not found');
+  log.info({ port: PORT, versions: SUPPORTED_VERSIONS.length, latest: LATEST_VERSION }, 'recipe-analyzer listening');
+  const v = findVanillaJar(DEFAULT_VERSION);
+  log.info({ jar: v, mcVersion: DEFAULT_VERSION }, v ? 'vanilla jar detected' : 'vanilla jar not found');
+  // 只预热默认版本的 vanilla 渲染；其他版本在首次分析或手动调用 /api/prewarm-vanilla 时按需生成。
   // 延迟到下一轮事件循环再启动预热，避免阻塞首个请求；进度见 /api/vanilla-status
   setImmediate(() => {
-    prewarmVanillaRenders({ mcVersion: '1.21.1', vanillaJar: process.env.VANILLA_JAR || null })
+    prewarmVanillaRenders({ mcVersion: DEFAULT_VERSION, vanillaJar: process.env.VANILLA_JAR || null })
       .then(r => log.info({ result: r }, 'vanilla prewarm done'))
       .catch(e => log.warn({ err: e }, 'vanilla prewarm failed'));
   });

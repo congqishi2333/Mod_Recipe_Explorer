@@ -7,6 +7,7 @@ import zlib from 'zlib';
 import { renderModel3DToPng, getRenderStats } from '../lib/render3d.js';
 import { buildAssetIndex, resolveItemRender, resolveFullModel, expandTag } from '../lib/assets.js';
 import { readZipEntries, getJson } from '../lib/zip.js';
+import { SUPPORTED_VERSIONS, LATEST_VERSION, DEFAULT_VERSION, normalizeMcVersion } from '../lib/versions.js';
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ra-smoke-'));
 let pass = 0, fail = 0;
@@ -253,6 +254,16 @@ check('可见左面 west（青）', (faceCounts.west || 0) > 50, `west=${faceCou
 check('不可见底面（绿）', !faceCounts.down, `down=${faceCounts.down || 0}`);
 check('不可见后面 north（黄）', !faceCounts.north, `north=${faceCounts.north || 0}`);
 check('不可见右面 east（品红）', !faceCounts.east, `east=${faceCounts.east || 0}`);
+
+console.log('\n[11] 多版本：正式版列表与版本参数校验');
+check('版本列表含起点 1.21.1 与最新 26.3', SUPPORTED_VERSIONS.includes('1.21.1') && LATEST_VERSION === '26.3',
+  `count=${SUPPORTED_VERSIONS.length}, latest=${LATEST_VERSION}`);
+check('默认版本合法', normalizeMcVersion(DEFAULT_VERSION) === DEFAULT_VERSION, `default=${DEFAULT_VERSION}`);
+check('接受 1.21.x 与 26.x', normalizeMcVersion('1.21.4') === '1.21.4' && normalizeMcVersion('26.3') === '26.3');
+check('空值回退默认', normalizeMcVersion('') === DEFAULT_VERSION);
+let badRejected = false;
+try { normalizeMcVersion('../../etc/passwd'); } catch (e) { badRejected = e.status === 400; }
+check('路径穿越被拒绝', badRejected);
 
 console.log(`\n结果: ${pass} PASS / ${fail} FAIL\n`);
 process.exit(fail ? 1 : 0);

@@ -7,26 +7,49 @@ const searchInput = document.getElementById('searchInput');
 const categoryStats = document.getElementById('categoryStats');
 const vanillaStatus = document.getElementById('vanillaStatus');
 const vanillaJarInput = document.getElementById('vanillaJar');
+const mcVersionSelect = document.getElementById('mcVersion');
 const includeVanillaEquivalentsInput = document.getElementById('includeVanillaEquivalents');
 const tpl = document.getElementById('recipeTpl');
 
 let allRecipes = [];
 let hasAnalyzed = false;
 
+async function loadVersions() {
+  try {
+    const r = await fetch('/api/versions');
+    const d = await r.json();
+    const versions = d.versions || [];
+    mcVersionSelect.innerHTML = '';
+    for (const v of versions) {
+      const opt = document.createElement('option');
+      opt.value = v;
+      opt.textContent = v === d.latest ? `${v}（最新正式版）` : v;
+      mcVersionSelect.appendChild(opt);
+    }
+    mcVersionSelect.value = versions.includes(d.default) ? d.default : versions[0];
+  } catch {
+    mcVersionSelect.innerHTML = '<option value="1.21.1">1.21.1</option>';
+  }
+  refreshVanillaStatus();
+}
+
 async function refreshVanillaStatus() {
   const p = vanillaJarInput.value.trim();
-  const url = p ? `/api/vanilla-status?path=${encodeURIComponent(p)}` : '/api/vanilla-status';
+  const version = mcVersionSelect.value || '1.21.1';
+  const qs = new URLSearchParams({ version });
+  if (p) qs.set('path', p);
   try {
-    const r = await fetch(url);
+    const r = await fetch(`/api/vanilla-status?${qs}`);
     const d = await r.json();
-    if (d.ok) vanillaStatus.textContent = `Vanilla fallback: 已加载 (${d.jarPath})`;
-    else vanillaStatus.textContent = `Vanilla fallback: 未找到${d.jarPath ? ` (${d.jarPath})` : ''}。可填 1.21.1 client jar 路径或设置 VANILLA_JAR。`;
+    if (d.ok) vanillaStatus.textContent = `Vanilla fallback: 已加载 ${d.mcVersion || version} (${d.jarPath})`;
+    else vanillaStatus.textContent = `Vanilla fallback: 未找到 ${version}${d.jarPath ? ` (${d.jarPath})` : ''}。可填对应版本的 client jar 路径或设置 VANILLA_JAR。`;
   } catch {
     vanillaStatus.textContent = 'Vanilla fallback: 状态检测失败';
   }
 }
 vanillaJarInput.addEventListener('change', refreshVanillaStatus);
-refreshVanillaStatus();
+mcVersionSelect.addEventListener('change', refreshVanillaStatus);
+loadVersions();
 
 form.addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -38,6 +61,7 @@ form.addEventListener('submit', async (e) => {
   categoryStats.innerHTML = '';
   const fd = new FormData();
   fd.append('mod', file);
+  fd.append('mcVersion', mcVersionSelect.value || '1.21.1');
   const vjar = vanillaJarInput.value.trim();
   if (vjar) fd.append('vanillaJar', vjar);
   if (includeVanillaEquivalentsInput?.checked) fd.append('includeVanillaEquivalents', '1');
@@ -46,7 +70,7 @@ form.addEventListener('submit', async (e) => {
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || '分析失败');
     statusEl.textContent = `完成：${data.recipeCount} 个配方`;
-    summaryEl.innerHTML = `<div><b>文件</b>: ${esc(data.modFile)}</div><div><b>配方数</b>: ${data.recipeCount}</div><div><b>Vanilla fallback</b>: ${data.vanillaLoaded ? esc(data.vanillaJar || 'loaded') : '未加载（minecraft 图标可能缺失）'}</div>`;
+    summaryEl.innerHTML = `<div><b>文件</b>: ${esc(data.modFile)}</div><div><b>版本</b>: ${esc(data.mcVersion || '')}</div><div><b>配方数</b>: ${data.recipeCount}</div><div><b>Vanilla fallback</b>: ${data.vanillaLoaded ? esc(data.vanillaJar || 'loaded') : '未加载（minecraft 图标可能缺失）'}</div>`;
     const ares = await fetch(data.analysisUrl);
     const analysis = await ares.json();
     allRecipes = analysis.recipes || [];

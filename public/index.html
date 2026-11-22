@@ -3,13 +3,13 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Recipe Analyzer - 1.21.1 NeoForge</title>
+  <title>Recipe Analyzer - Minecraft Java Edition 合成分析</title>
   <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
   <header class="topbar">
     <div>
-      <h1>合成表分析器 <span class="badge">1.21.1 NeoForge</span></h1>
+      <h1>合成表分析器 <span class="badge">Java Edition · 多版本</span></h1>
       <p class="sub">上传 mod jar/zip，自动解析配方、提取图标、渲染 3x3 合成表并分类。</p>
     </div>
   </header>
@@ -21,7 +21,10 @@
         <label class="field">Mod 文件
           <input id="modFile" type="file" name="mod" accept=".jar,.zip" required />
         </label>
-        <label class="field">Vanilla 1.21.1 jar（可选，图标回退）
+        <label class="field">Minecraft 版本
+          <select id="mcVersion" name="mcVersion"></select>
+        </label>
+        <label class="field">Vanilla jar（可选，图标回退）
           <input id="vanillaJar" type="text" name="vanillaJar" placeholder="留空自动检测；也可填绝对路径" />
         </label>
         <div id="vanillaStatus" class="status small">检测 vanilla jar...</div>
