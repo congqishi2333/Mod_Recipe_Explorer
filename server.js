@@ -10,7 +10,7 @@ import { prewarmVanillaRenders, getPrewarmProgress } from './lib/analyzer.js';
 import { findVanillaJar, loadVanillaAssets, clearVanillaCache } from './lib/vanilla.js';
 import { getRenderStats, resetRenderStats } from './lib/render3d.js';
 import { SUPPORTED_VERSIONS, LATEST_VERSION, DEFAULT_VERSION, normalizeMcVersion } from './lib/versions.js';
-import { pruneDataDir, pruneUploadsDir } from './lib/data-maintenance.js';
+import { pruneDataDir, pruneUploadsDir, pruneVanillaRendersDir } from './lib/data-maintenance.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -26,6 +26,8 @@ const DATA_MAX_AGE_MS = Math.max(0, Number(process.env.DATA_MAX_AGE_MS) || 7 * 2
 const DATA_MAX_ENTRIES = Math.max(1, Number(process.env.DATA_MAX_ENTRIES) || 30);
 const DATA_MAX_TOTAL_BYTES = Math.max(0, Number(process.env.DATA_MAX_TOTAL_BYTES) || 512 * 1024 * 1024);
 const UPLOAD_MAX_AGE_MS = Math.max(0, Number(process.env.UPLOAD_MAX_AGE_MS) || 24 * 60 * 60 * 1000);
+const VANILLA_RENDERS_MAX_AGE_MS = Math.max(0, Number(process.env.VANILLA_RENDERS_MAX_AGE_MS) || 30 * 24 * 60 * 60 * 1000);
+const VANILLA_RENDERS_MAX_TOTAL_BYTES = Math.max(0, Number(process.env.VANILLA_RENDERS_MAX_TOTAL_BYTES) || 1024 * 1024 * 1024);
 
 function runDataMaintenance(reason = 'manual') {
   try {
@@ -37,10 +39,15 @@ function runDataMaintenance(reason = 'manual') {
       protectNames: protect,
     });
     const uploads = pruneUploadsDir(uploadDir, UPLOAD_MAX_AGE_MS);
-    if (data.removed.length || uploads.removed) {
-      log.info({ reason, data, uploads }, 'data maintenance completed');
+    const vanillaRenders = pruneVanillaRendersDir(path.join(dataDir, 'vanilla-renders'), {
+      maxAgeMs: VANILLA_RENDERS_MAX_AGE_MS,
+      maxTotalBytes: VANILLA_RENDERS_MAX_TOTAL_BYTES,
+      protectVersions: [DEFAULT_VERSION],
+    });
+    if (data.removed.length || uploads.removed || vanillaRenders.removed.length) {
+      log.info({ reason, data, uploads, vanillaRenders }, 'data maintenance completed');
     }
-    return { ok: true, reason, data, uploads };
+    return { ok: true, reason, data, uploads, vanillaRenders };
   } catch (e) {
     log.warn({ err: e, reason }, 'data maintenance failed');
     return { ok: false, reason, error: String(e?.message || e) };
