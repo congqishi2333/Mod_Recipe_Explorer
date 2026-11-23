@@ -10,6 +10,7 @@ import { prewarmVanillaRenders, getPrewarmProgress } from './lib/analyzer.js';
 import { findVanillaJar, loadVanillaAssets, clearVanillaCache } from './lib/vanilla.js';
 import { getRenderStats, resetRenderStats } from './lib/render3d.js';
 import { SUPPORTED_VERSIONS, LATEST_VERSION, DEFAULT_VERSION, normalizeMcVersion } from './lib/versions.js';
+import { pruneDataDir, pruneUploadsDir } from './lib/data-maintenance.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -20,6 +21,31 @@ const log = pino({ level: process.env.LOG_LEVEL || 'info' });
 const dataDir = path.join(__dirname, 'data');
 const uploadDir = path.join(dataDir, 'uploads');
 fs.mkdirSync(uploadDir, { recursive: true });
+
+const DATA_MAX_AGE_MS = Math.max(0, Number(process.env.DATA_MAX_AGE_MS) || 7 * 24 * 60 * 60 * 1000);
+const DATA_MAX_ENTRIES = Math.max(1, Number(process.env.DATA_MAX_ENTRIES) || 30);
+const DATA_MAX_TOTAL_BYTES = Math.max(0, Number(process.env.DATA_MAX_TOTAL_BYTES) || 512 * 1024 * 1024);
+const UPLOAD_MAX_AGE_MS = Math.max(0, Number(process.env.UPLOAD_MAX_AGE_MS) || 24 * 60 * 60 * 1000);
+
+function runDataMaintenance(reason = 'manual') {
+  try {
+    const protect = activeAnalysis?.outId ? [activeAnalysis.outId] : [];
+    const data = pruneDataDir(dataDir, {
+      maxAgeMs: DATA_MAX_AGE_MS,
+      maxEntries: DATA_MAX_ENTRIES,
+      maxTotalBytes: DATA_MAX_TOTAL_BYTES,
+      protectNames: protect,
+    });
+    const uploads = pruneUploadsDir(uploadDir, UPLOAD_MAX_AGE_MS);
+    if (data.removed.length || uploads.removed) {
+      log.info({ reason, data, uploads }, 'data maintenance completed');
+    }
+    return { ok: true, reason, data, uploads };
+  } catch (e) {
+    log.warn({ err: e, reason }, 'data maintenance failed');
+    return { ok: false, reason, error: String(e?.message || e) };
+  }
+}
 
 const ANALYZE_TIMEOUT_MS = Math.max(30_000, Number(process.env.ANALYZE_TIMEOUT_MS) || 10 * 60_000);
 const ANALYZE_MAX_RETRIES = Math.max(0, Math.min(3, Number(process.env.ANALYZE_MAX_RETRIES ?? 1)));
@@ -248,6 +274,10 @@ app.get('/data/:id/:kind/:file', (req, res) => {
 });
 
 app.get('/api/health', (_req, res) => res.json({ ok: true, analyze: getAnalyzeStatus() }));
+app.post('/api/maintenance/prune', (_req, res) => {
+  const result = runDataMaintenance('api');
+  res.status(result.ok ? 200 : 500).json(result);
+});
 app.get('/api/versions', (_req, res) => res.json({
   versions: SUPPORTED_VERSIONS, latest: LATEST_VERSION, default: DEFAULT_VERSION,
 }));
@@ -344,6 +374,7 @@ app.post('/api/analyze', upload.array('mods', 50), async (req, res) => {
       outDir,
       options: { mcVersion, vanillaJar, includeVanillaEquivalents },
     }, { timeoutMs: ANALYZE_TIMEOUT_MS, retries: ANALYZE_MAX_RETRIES });
+    runDataMaintenance('post-analyze');
     res.json({
       ok: true,
       mcVersion,
@@ -380,6 +411,7 @@ app.listen(PORT, HOST, () => {
   log.info({ host: HOST, port: PORT, versions: SUPPORTED_VERSIONS.length, latest: LATEST_VERSION }, 'recipe-analyzer listening');
   const v = findVanillaJar(DEFAULT_VERSION);
   log.info({ jar: v, mcVersion: DEFAULT_VERSION }, v ? 'vanilla jar detected' : 'vanilla jar not found');
+  runDataMaintenance('startup');
   // 只预热默认版本的 vanilla 渲染；其他版本在首次分析或手动调用 /api/prewarm-vanilla 时按需生成。
   // 延迟到下一轮事件循环再启动预热，避免阻塞首个请求；进度见 /api/vanilla-status
   setImmediate(() => {
