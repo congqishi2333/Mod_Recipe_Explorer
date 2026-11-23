@@ -21,7 +21,10 @@ const dataDir = path.join(__dirname, 'data');
 const uploadDir = path.join(dataDir, 'uploads');
 fs.mkdirSync(uploadDir, { recursive: true });
 
-let activeAnalysis = null; // { startedAt, files, outId }
+const ANALYZE_TIMEOUT_MS = Math.max(30_000, Number(process.env.ANALYZE_TIMEOUT_MS) || 10 * 60_000);
+const ANALYZE_MAX_RETRIES = Math.max(0, Math.min(3, Number(process.env.ANALYZE_MAX_RETRIES ?? 1)));
+
+let activeAnalysis = null; // { startedAt, files, outId, worker, attempt, maxAttempts, progress, cancelRequested }
 function getAnalyzeStatus() {
   if (!activeAnalysis) return { running: false };
   return {
@@ -30,27 +33,125 @@ function getAnalyzeStatus() {
     outId: activeAnalysis.outId,
     files: activeAnalysis.files,
     elapsedMs: Date.now() - activeAnalysis.startedAt,
+    attempt: activeAnalysis.attempt,
+    maxAttempts: activeAnalysis.maxAttempts,
+    progress: activeAnalysis.progress || null,
+    cancelRequested: !!activeAnalysis.cancelRequested,
   };
 }
 
-function runAnalyzeInWorker(payload) {
+function isRetryableWorkerError(err) {
+  if (!err) return false;
+  if (err.cancelled) return false;
+  // Explicit logical/validation errors from worker payload are not retried.
+  if (err.logical) return false;
+  const msg = String(err.message || err);
+  return err.workerCrash === true
+    || err.code === 'ANALYZE_TIMEOUT'
+    || /Analyze worker exited|Worker stopped|worker/i.test(msg);
+}
+
+function runAnalyzeInWorkerOnce(payload, { timeoutMs, attempt, maxAttempts }) {
   return new Promise((resolve, reject) => {
     const worker = new Worker(new URL('./lib/analyze-task.js', import.meta.url), {
       workerData: payload,
     });
-    worker.once('message', (msg) => {
-      if (msg?.ok) resolve(msg);
-      else {
-        const err = new Error(msg?.error || 'Analysis failed');
-        err.status = msg?.status || 500;
-        reject(err);
+    let settled = false;
+    let timer = null;
+
+    const cleanup = () => {
+      if (timer) clearTimeout(timer);
+      timer = null;
+      worker.removeAllListeners('message');
+      worker.removeAllListeners('error');
+      worker.removeAllListeners('exit');
+    };
+    const finishResolve = (val) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(val);
+    };
+    const finishReject = (err) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(err);
+    };
+
+    if (activeAnalysis) {
+      activeAnalysis.worker = worker;
+      activeAnalysis.attempt = attempt;
+      activeAnalysis.maxAttempts = maxAttempts;
+    }
+
+    timer = setTimeout(async () => {
+      const err = new Error(`Analysis timed out after ${timeoutMs}ms`);
+      err.status = 504;
+      err.code = 'ANALYZE_TIMEOUT';
+      err.workerCrash = true;
+      try { await worker.terminate(); } catch {}
+      finishReject(err);
+    }, timeoutMs);
+
+    worker.on('message', (msg) => {
+      if (msg?.type === 'progress') {
+        if (activeAnalysis) activeAnalysis.progress = msg.progress || msg;
+        return;
       }
+      if (msg?.ok) return finishResolve(msg);
+      const err = new Error(msg?.error || 'Analysis failed');
+      err.status = msg?.status || 500;
+      err.logical = true; // from analyzer, do not auto-retry
+      finishReject(err);
     });
-    worker.once('error', reject);
-    worker.once('exit', (code) => {
-      if (code !== 0) reject(new Error(`Analyze worker exited with code ${code}`));
+
+    worker.on('error', (err) => {
+      err.workerCrash = true;
+      finishReject(err);
+    });
+
+    worker.on('exit', (code) => {
+      if (settled) return;
+      if (code === 0) {
+        finishReject(new Error('Analyze worker exited before sending result'));
+        return;
+      }
+      const err = new Error(`Analyze worker exited with code ${code}`);
+      err.status = 500;
+      err.workerCrash = true;
+      finishReject(err);
     });
   });
+}
+
+async function runAnalyzeInWorker(payload, opts = {}) {
+  const timeoutMs = Math.max(30_000, Number(opts.timeoutMs) || ANALYZE_TIMEOUT_MS);
+  const retries = Math.max(0, Math.min(3, Number(opts.retries ?? ANALYZE_MAX_RETRIES)));
+  const maxAttempts = retries + 1;
+  let lastErr;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    if (activeAnalysis?.cancelRequested) {
+      const err = new Error('Analysis cancelled');
+      err.status = 499;
+      err.cancelled = true;
+      throw err;
+    }
+    try {
+      if (activeAnalysis) {
+        activeAnalysis.progress = { stage: 'starting', attempt, maxAttempts };
+      }
+      return await runAnalyzeInWorkerOnce(payload, { timeoutMs, attempt, maxAttempts });
+    } catch (err) {
+      lastErr = err;
+      const canRetry = attempt < maxAttempts && isRetryableWorkerError(err);
+      log.warn({ err, attempt, maxAttempts, canRetry }, 'analyze worker attempt failed');
+      if (!canRetry) throw err;
+      if (activeAnalysis) activeAnalysis.progress = { stage: 'retrying', attempt, maxAttempts, error: String(err?.message || err) };
+      await new Promise(r => setTimeout(r, Math.min(1000 * attempt, 3000)));
+    }
+  }
+  throw lastErr;
 }
 
 function cleanupUploads(files = []) {
@@ -152,6 +253,18 @@ app.get('/api/versions', (_req, res) => res.json({
 }));
 app.get('/api/analyze/status', (_req, res) => res.json({ ok: true, ...getAnalyzeStatus() }));
 
+app.post('/api/analyze/cancel', async (_req, res) => {
+  if (!activeAnalysis) return res.status(404).json({ ok: false, error: 'No analysis running' });
+  activeAnalysis.cancelRequested = true;
+  activeAnalysis.progress = { ...(activeAnalysis.progress || {}), stage: 'cancelling' };
+  try {
+    if (activeAnalysis.worker) await activeAnalysis.worker.terminate();
+  } catch (e) {
+    log.warn({ err: e }, 'failed to terminate analysis worker');
+  }
+  res.json({ ok: true, ...getAnalyzeStatus() });
+});
+
 app.post('/api/prewarm-vanilla', async (req, res) => {
   try {
     const mcVersion = normalizeMcVersion(req.body?.mcVersion);
@@ -216,12 +329,21 @@ app.post('/api/analyze', upload.array('mods', 50), async (req, res) => {
       || req.body?.includeVanillaEquivalents === '1'
       || req.body?.includeVanillaEquivalents === 'true';
 
-    activeAnalysis = { startedAt: Date.now(), files: files.map(f => f.originalname), outId };
+    activeAnalysis = {
+      startedAt: Date.now(),
+      files: files.map(f => f.originalname),
+      outId,
+      worker: null,
+      attempt: 0,
+      maxAttempts: ANALYZE_MAX_RETRIES + 1,
+      progress: { stage: 'queued' },
+      cancelRequested: false,
+    };
     const result = await runAnalyzeInWorker({
       jarPaths: files.map(f => f.path),
       outDir,
       options: { mcVersion, vanillaJar, includeVanillaEquivalents },
-    });
+    }, { timeoutMs: ANALYZE_TIMEOUT_MS, retries: ANALYZE_MAX_RETRIES });
     res.json({
       ok: true,
       mcVersion,
