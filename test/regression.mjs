@@ -6,9 +6,11 @@ import { fileURLToPath, pathToFileURL } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
+import { PNG } from 'pngjs';
 const { collectRecipes } = await import(pathToFileURL(path.join(root, 'lib/recipes.js')).href);
 const { analyzeModJar } = await import(pathToFileURL(path.join(root, 'lib/analyzer.js')).href);
-const { pruneDataDir, pruneUploadsDir } = await import(pathToFileURL(path.join(root, 'lib/data-maintenance.js')).href);
+const { pruneDataDir, pruneUploadsDir, pruneVanillaRendersDir } = await import(pathToFileURL(path.join(root, 'lib/data-maintenance.js')).href);
+const { extractTextureFromSources } = await import(pathToFileURL(path.join(root, 'lib/zip.js')).href);
 
 let pass = 0, fail = 0;
 function check(name, cond, detail = '') {
@@ -201,6 +203,66 @@ console.log('\n[5] uploads maintenance: 过期上传文件清理');
   const r = pruneUploadsDir(upDir, 24 * 60 * 60 * 1000);
   check('过期上传被删', !fs.existsSync(oldFile) && r.removed === 1, JSON.stringify(r));
   check('新上传保留', fs.existsSync(newFile), fs.readdirSync(upDir).join(','));
+}
+
+console.log('\n[6] L9: 非PNG/畸形PNG纹理被拒绝，不落盘');
+{
+  const outDir = fs.mkdtempSync(path.join(tmp, 'tex-'));
+  const mkPng = (r, g, b) => {
+    const png = new PNG({ width: 1, height: 1 });
+    png.data[0] = r; png.data[1] = g; png.data[2] = b; png.data[3] = 255;
+    return PNG.sync.write(png);
+  };
+  const validPng = mkPng(10, 20, 30);
+  const entries = new Map([
+    ['assets/m/textures/item/good.png', { getData: () => validPng }],
+    ['assets/m/textures/item/bad.txt.png', { getData: () => Buffer.from('not a png') }],
+    ['assets/m/textures/item/broken.png', { getData: () => Buffer.concat([Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]), Buffer.from('broken')]) }],
+  ]);
+
+  const good = extractTextureFromSources(entries, null, 'm:item/good', outDir, 'good');
+  check('有效PNG被提取', typeof good === 'string' && fs.existsSync(path.join(outDir, good)), String(good));
+  const bad = extractTextureFromSources(entries, null, 'm:item/bad.txt', outDir, 'bad');
+  check('非PNG被拒绝', bad === null, String(bad));
+  check('非PNG未落盘', !fs.existsSync(path.join(outDir, 'bad.png')), fs.readdirSync(outDir).join(','));
+  const broken = extractTextureFromSources(entries, null, 'm:item/broken', outDir, 'broken');
+  check('畸形PNG被拒绝', broken === null, String(broken));
+  check('畸形PNG未落盘', !fs.existsSync(path.join(outDir, 'broken.png')), fs.readdirSync(outDir).join(','));
+}
+
+console.log('\n[7] vanilla-renders prune: age/maxTotalBytes/protectVersions');
+{
+  const rootDir = fs.mkdtempSync(path.join(tmp, 'vr-'));
+  const mkVer = (name, ageMs, bytes) => {
+    const dir = path.join(rootDir, name);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'a.png'), Buffer.alloc(bytes, 2));
+    const t = new Date(Date.now() - ageMs);
+    fs.utimesSync(dir, t, t);
+  };
+  mkVer('1.21.1', 40 * 24 * 60 * 60 * 1000, 100);
+  mkVer('1.21.4', 40 * 24 * 60 * 60 * 1000, 100);
+  mkVer('26.1', 1 * 24 * 60 * 60 * 1000, 100);
+
+  let r = pruneVanillaRendersDir(rootDir, { maxAgeMs: 30 * 24 * 60 * 60 * 1000, maxTotalBytes: 10 * 1024, protectVersions: ['1.21.1'] });
+  check('过期版本被清理', r.removed.some(x => x.name === '1.21.4' && x.reason === 'age'), JSON.stringify(r.removed));
+  check('受保护版本保留', fs.existsSync(path.join(rootDir, '1.21.1')), JSON.stringify(r.removed));
+
+  const root2 = fs.mkdtempSync(path.join(tmp, 'vr2-'));
+  mkVer2(root2, '1.21.1', 3 * 24 * 60 * 60 * 1000, 400);
+  mkVer2(root2, '1.21.4', 2 * 24 * 60 * 60 * 1000, 400);
+  mkVer2(root2, '26.1', 1 * 24 * 60 * 60 * 1000, 400);
+  const r2 = pruneVanillaRendersDir(root2, { maxAgeMs: 60 * 24 * 60 * 60 * 1000, maxTotalBytes: 900, protectVersions: [] });
+  check('vanilla-renders maxTotalBytes 生效', r2.removed.some(x => x.reason === 'maxTotalBytes'), JSON.stringify(r2.removed));
+  check('vanilla-renders 保留最新', fs.existsSync(path.join(root2, '26.1')), fs.readdirSync(root2).join(','));
+}
+
+function mkVer2(rootDir, name, ageMs, bytes) {
+  const dir = path.join(rootDir, name);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'a.png'), Buffer.alloc(bytes, 2));
+  const t = new Date(Date.now() - ageMs);
+  fs.utimesSync(dir, t, t);
 }
 
 console.log(`\n结果: ${pass} PASS / ${fail} FAIL\n`);
