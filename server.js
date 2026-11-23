@@ -18,7 +18,7 @@ const PORT = process.env.PORT || 3033;
 const HOST = process.env.HOST || '127.0.0.1';
 const log = pino({ level: process.env.LOG_LEVEL || 'info' });
 
-const dataDir = path.join(__dirname, 'data');
+const dataDir = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : path.join(__dirname, 'data');
 const uploadDir = path.join(dataDir, 'uploads');
 fs.mkdirSync(uploadDir, { recursive: true });
 
@@ -456,16 +456,21 @@ app.use((err, req, res, _next) => {
   res.status(status).json({ error: status >= 500 ? 'Internal server error' : String(err?.message || err) });
 });
 
-app.listen(PORT, HOST, () => {
-  log.info({ host: HOST, port: PORT, versions: SUPPORTED_VERSIONS.length, latest: LATEST_VERSION }, 'recipe-analyzer listening');
-  const v = findVanillaJar(DEFAULT_VERSION);
-  log.info({ jar: v, mcVersion: DEFAULT_VERSION }, v ? 'vanilla jar detected' : 'vanilla jar not found');
-  void runDataMaintenance('startup', { force: true });
-  // 只预热默认版本的 vanilla 渲染；其他版本在首次分析或手动调用 /api/prewarm-vanilla 时按需生成。
-  // 延迟到下一轮事件循环再启动预热，避免阻塞首个请求；进度见 /api/vanilla-status
-  setImmediate(() => {
-    prewarmVanillaRenders({ mcVersion: DEFAULT_VERSION, vanillaJar: process.env.VANILLA_JAR || null, dataDir })
-      .then(r => log.info({ result: r }, 'vanilla prewarm done'))
-      .catch(e => log.warn({ err: e }, 'vanilla prewarm failed'));
+export { app, runDataMaintenance, dataDir };
+
+const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (isMain) {
+  app.listen(PORT, HOST, () => {
+    log.info({ host: HOST, port: PORT, versions: SUPPORTED_VERSIONS.length, latest: LATEST_VERSION }, 'recipe-analyzer listening');
+    const v = findVanillaJar(DEFAULT_VERSION);
+    log.info({ jar: v, mcVersion: DEFAULT_VERSION }, v ? 'vanilla jar detected' : 'vanilla jar not found');
+    void runDataMaintenance('startup', { force: true });
+    // 只预热默认版本的 vanilla 渲染；其他版本在首次分析或手动调用 /api/prewarm-vanilla 时按需生成。
+    // 延迟到下一轮事件循环再启动预热，避免阻塞首个请求；进度见 /api/vanilla-status
+    setImmediate(() => {
+      prewarmVanillaRenders({ mcVersion: DEFAULT_VERSION, vanillaJar: process.env.VANILLA_JAR || null, dataDir })
+        .then(r => log.info({ result: r }, 'vanilla prewarm done'))
+        .catch(e => log.warn({ err: e }, 'vanilla prewarm failed'));
+    });
   });
-});
+}
