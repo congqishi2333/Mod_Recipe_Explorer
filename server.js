@@ -5,7 +5,8 @@ import path from 'path';
 import fs from 'fs';
 import os from 'os';
 import { fileURLToPath } from 'url';
-import { analyzeModJar, prewarmVanillaRenders, getPrewarmProgress } from './lib/analyzer.js';
+import { Worker } from 'worker_threads';
+import { prewarmVanillaRenders, getPrewarmProgress } from './lib/analyzer.js';
 import { findVanillaJar, loadVanillaAssets, clearVanillaCache } from './lib/vanilla.js';
 import { getRenderStats, resetRenderStats } from './lib/render3d.js';
 import { SUPPORTED_VERSIONS, LATEST_VERSION, DEFAULT_VERSION, normalizeMcVersion } from './lib/versions.js';
@@ -19,6 +20,38 @@ const log = pino({ level: process.env.LOG_LEVEL || 'info' });
 const dataDir = path.join(__dirname, 'data');
 const uploadDir = path.join(dataDir, 'uploads');
 fs.mkdirSync(uploadDir, { recursive: true });
+
+let activeAnalysis = null; // { startedAt, files, outId }
+function getAnalyzeStatus() {
+  if (!activeAnalysis) return { running: false };
+  return {
+    running: true,
+    startedAt: activeAnalysis.startedAt,
+    outId: activeAnalysis.outId,
+    files: activeAnalysis.files,
+    elapsedMs: Date.now() - activeAnalysis.startedAt,
+  };
+}
+
+function runAnalyzeInWorker(payload) {
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(new URL('./lib/analyze-task.js', import.meta.url), {
+      workerData: payload,
+    });
+    worker.once('message', (msg) => {
+      if (msg?.ok) resolve(msg);
+      else {
+        const err = new Error(msg?.error || 'Analysis failed');
+        err.status = msg?.status || 500;
+        reject(err);
+      }
+    });
+    worker.once('error', reject);
+    worker.once('exit', (code) => {
+      if (code !== 0) reject(new Error(`Analyze worker exited with code ${code}`));
+    });
+  });
+}
 
 function cleanupUploads(files = []) {
   for (const f of files) {
@@ -113,10 +146,11 @@ app.get('/data/:id/:kind/:file', (req, res) => {
   sendIfExists(res, safeDataPath(id, kind, file));
 });
 
-app.get('/api/health', (_req, res) => res.json({ ok: true }));
+app.get('/api/health', (_req, res) => res.json({ ok: true, analyze: getAnalyzeStatus() }));
 app.get('/api/versions', (_req, res) => res.json({
   versions: SUPPORTED_VERSIONS, latest: LATEST_VERSION, default: DEFAULT_VERSION,
 }));
+app.get('/api/analyze/status', (_req, res) => res.json({ ok: true, ...getAnalyzeStatus() }));
 
 app.post('/api/prewarm-vanilla', async (req, res) => {
   try {
@@ -167,6 +201,10 @@ app.post('/api/analyze', upload.array('mods', 50), async (req, res) => {
   const files = req.files || [];
   try {
     if (!files.length) return res.status(400).json({ error: 'No file uploaded' });
+    if (activeAnalysis) {
+      cleanupUploads(files);
+      return res.status(409).json({ error: 'Analysis already in progress', analyze: getAnalyzeStatus() });
+    }
     const outId = path.parse(files[0].filename).name;
     if (!isSafeId(outId)) return res.status(400).json({ error: 'Invalid upload id' });
     const outDir = safeDataPath(outId);
@@ -177,8 +215,12 @@ app.post('/api/analyze', upload.array('mods', 50), async (req, res) => {
     const includeVanillaEquivalents = req.body?.includeVanillaEquivalents === true
       || req.body?.includeVanillaEquivalents === '1'
       || req.body?.includeVanillaEquivalents === 'true';
-    const result = await analyzeModJar(files.map(f => f.path), outDir, {
-      mcVersion, vanillaJar, includeVanillaEquivalents,
+
+    activeAnalysis = { startedAt: Date.now(), files: files.map(f => f.originalname), outId };
+    const result = await runAnalyzeInWorker({
+      jarPaths: files.map(f => f.path),
+      outDir,
+      options: { mcVersion, vanillaJar, includeVanillaEquivalents },
     });
     res.json({
       ok: true,
@@ -191,6 +233,7 @@ app.post('/api/analyze', upload.array('mods', 50), async (req, res) => {
     const status = e?.status || 500;
     res.status(status).json({ error: status >= 500 ? 'Analysis failed' : String(e?.message || e) });
   } finally {
+    activeAnalysis = null;
     cleanupUploads(files);
   }
 });
