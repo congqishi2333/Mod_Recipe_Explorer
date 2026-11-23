@@ -9,6 +9,7 @@ const root = path.resolve(__dirname, '..');
 import { PNG } from 'pngjs';
 const { collectRecipes } = await import(pathToFileURL(path.join(root, 'lib/recipes.js')).href);
 const { analyzeModJar } = await import(pathToFileURL(path.join(root, 'lib/analyzer.js')).href);
+const { classifyRecipe } = await import(pathToFileURL(path.join(root, 'lib/classify.js')).href);
 const { pruneDataDir, pruneUploadsDir, pruneVanillaRendersDir } = await import(pathToFileURL(path.join(root, 'lib/data-maintenance.js')).href);
 const { extractTextureFromSources } = await import(pathToFileURL(path.join(root, 'lib/zip.js')).href);
 
@@ -263,6 +264,16 @@ function mkVer2(rootDir, name, ageMs, bytes) {
   fs.writeFileSync(path.join(dir, 'a.png'), Buffer.alloc(bytes, 2));
   const t = new Date(Date.now() - ageMs);
   fs.utimesSync(dir, t, t);
+}
+
+console.log('\n[8] L6: 分类边界匹配，避免常见误判');
+{
+  const ai = { blockstates: new Set(), textures: new Set(), models: new Set() };
+  check('iron_axe 归工具', classifyRecipe({ result: { id: 'minecraft:iron_axe' } }, ai).category === '工具');
+  check('iron_pickaxe 归工具', classifyRecipe({ result: { id: 'minecraft:iron_pickaxe' } }, ai).category === '工具');
+  check('music_disc_13 归装饰/功能', classifyRecipe({ result: { id: 'minecraft:music_disc_13' } }, ai).category === '装饰/功能');
+  check('jukebox 归装饰/功能', classifyRecipe({ result: { id: 'minecraft:jukebox' } }, ai).category === '装饰/功能');
+  check('bookshelf 归装饰/功能', classifyRecipe({ result: { id: 'minecraft:bookshelf' } }, ai).category === '装饰/功能');
 }
 
 console.log(`\n结果: ${pass} PASS / ${fail} FAIL\n`);
