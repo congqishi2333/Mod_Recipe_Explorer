@@ -17,6 +17,14 @@
 
 ## 运行
 
+### 快捷启动（Windows）
+
+- 双击 `start.cmd`（或在 PowerShell 运行 `.\start.ps1`）
+- 首次运行若缺少 `node_modules` 会自动执行 `npm install`
+- 启动后会自动打开 http://127.0.0.1:3033
+
+### 手动启动
+
 ```bash
 npm install
 npm start

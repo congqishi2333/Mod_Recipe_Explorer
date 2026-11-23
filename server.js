@@ -6,18 +6,36 @@ import fs from 'fs';
 import os from 'os';
 import { fileURLToPath } from 'url';
 import { analyzeModJar, prewarmVanillaRenders, getPrewarmProgress } from './lib/analyzer.js';
-import { findVanillaJar, loadVanillaAssets } from './lib/vanilla.js';
-import { getRenderStats } from './lib/render3d.js';
+import { findVanillaJar, loadVanillaAssets, clearVanillaCache } from './lib/vanilla.js';
+import { getRenderStats, resetRenderStats } from './lib/render3d.js';
 import { SUPPORTED_VERSIONS, LATEST_VERSION, DEFAULT_VERSION, normalizeMcVersion } from './lib/versions.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const PORT = process.env.PORT || 3033;
+const HOST = process.env.HOST || '127.0.0.1';
 const log = pino({ level: process.env.LOG_LEVEL || 'info' });
 
 const dataDir = path.join(__dirname, 'data');
 const uploadDir = path.join(dataDir, 'uploads');
 fs.mkdirSync(uploadDir, { recursive: true });
+
+function cleanupUploads(files = []) {
+  for (const f of files) {
+    try { if (f?.path && fs.existsSync(f.path)) fs.unlinkSync(f.path); } catch {}
+  }
+}
+
+function isSafeId(id) {
+  return typeof id === 'string' && /^[A-Za-z0-9_-]+$/.test(id);
+}
+
+function safeDataPath(...parts) {
+  const resolved = path.resolve(dataDir, ...parts);
+  const base = path.resolve(dataDir) + path.sep;
+  if (!resolved.startsWith(base)) return null;
+  return resolved;
+}
 
 // 用户提供的 vanillaJar 只允许 .jar 且位于已知的 Minecraft 安装目录下，
 // 防止任意绝对路径读取。环境变量 VANILLA_JAR 是服务端配置，不走此校验。
@@ -59,26 +77,40 @@ const upload = multer({
   },
 });
 
+app.disable('x-powered-by');
+app.use((req, res, next) => {
+  const host = String(req.headers.host || '').split(':')[0].toLowerCase();
+  if (host && !['127.0.0.1', 'localhost', '[::1]', '::1'].includes(host)) return res.status(421).end();
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Content-Security-Policy', "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'");
+  next();
+});
 app.use(express.json({ limit: '2mb' }));
 app.use('/', express.static(path.join(__dirname, 'public')));
 // 只暴露分析结果、图标、渲染图和 vanilla 预热图，不暴露 uploads/ 里别人上传的 jar
-const idSafe = s => String(s).replace(/[^a-zA-Z0-9._-]/g, '_');
 function sendIfExists(res, p) {
-  if (!fs.existsSync(p)) return res.status(404).end();
+  if (!p || !fs.existsSync(p)) return res.status(404).end();
   res.sendFile(p);
 }
 app.get('/data/vanilla-renders/:version/:file', (req, res) => {
   let version;
   try { version = normalizeMcVersion(req.params.version); }
   catch { return res.status(404).end(); }
-  sendIfExists(res, path.join(dataDir, 'vanilla-renders', version, path.basename(req.params.file)));
+  const file = path.basename(req.params.file || '');
+  if (!/^[A-Za-z0-9._-]+\.png$/i.test(file)) return res.status(404).end();
+  sendIfExists(res, safeDataPath('vanilla-renders', version, file));
 });
-app.get('/data/:id/analysis.json', (req, res) =>
-  sendIfExists(res, path.join(dataDir, idSafe(req.params.id), 'analysis.json')));
+app.get('/data/:id/analysis.json', (req, res) => {
+  const id = req.params.id;
+  if (!isSafeId(id)) return res.status(404).end();
+  sendIfExists(res, safeDataPath(id, 'analysis.json'));
+});
 app.get('/data/:id/:kind/:file', (req, res) => {
-  const kind = req.params.kind;
-  if (kind !== 'icons' && kind !== 'renders') return res.status(404).end();
-  sendIfExists(res, path.join(dataDir, idSafe(req.params.id), kind, path.basename(req.params.file)));
+  const { id, kind } = req.params;
+  if (!isSafeId(id) || (kind !== 'icons' && kind !== 'renders')) return res.status(404).end();
+  const file = path.basename(req.params.file || '');
+  if (!/^[A-Za-z0-9._-]+\.png$/i.test(file)) return res.status(404).end();
+  sendIfExists(res, safeDataPath(id, kind, file));
 });
 
 app.get('/api/health', (_req, res) => res.json({ ok: true }));
@@ -89,10 +121,11 @@ app.get('/api/versions', (_req, res) => res.json({
 app.post('/api/prewarm-vanilla', async (req, res) => {
   try {
     const mcVersion = normalizeMcVersion(req.body?.mcVersion);
-    const out = await prewarmVanillaRenders({ mcVersion, vanillaJar: safeVanillaJar(req.body?.vanillaJar) });
+    const out = await prewarmVanillaRenders({ mcVersion, vanillaJar: safeVanillaJar(req.body?.vanillaJar), dataDir });
     res.json(out);
   } catch (e) {
-    res.status(e?.status || 500).json({ ok: false, error: String(e?.message || e) });
+    const status = e?.status || 500;
+    res.status(status).json({ ok: false, error: status >= 500 ? 'Prewarm failed' : String(e?.message || e) });
   }
 });
 
@@ -111,14 +144,33 @@ app.get('/api/vanilla-status', (req, res) => {
     error: loaded.error || null,
     prewarm: getPrewarmProgress(),
     renderStats: getRenderStats(),
+    memory: { rssMB: +(process.memoryUsage().rss / 1048576).toFixed(1) },
   });
 });
 
-app.post('/api/analyze', upload.array('mods', 50), async (req, res) => {
+app.post('/api/clear-cache', (req, res) => {
   try {
-    const files = req.files || [];
+    clearVanillaCache();
+    if (req.body?.resetStats) resetRenderStats();
+    if (global.gc) global.gc();
+    res.json({
+      ok: true,
+      gcRan: !!global.gc,
+      memory: { rssMB: +(process.memoryUsage().rss / 1048576).toFixed(1) },
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: 'Failed to clear cache' });
+  }
+});
+
+app.post('/api/analyze', upload.array('mods', 50), async (req, res) => {
+  const files = req.files || [];
+  try {
     if (!files.length) return res.status(400).json({ error: 'No file uploaded' });
-    const outDir = path.join(dataDir, path.parse(files[0].filename).name);
+    const outId = path.parse(files[0].filename).name;
+    if (!isSafeId(outId)) return res.status(400).json({ error: 'Invalid upload id' });
+    const outDir = safeDataPath(outId);
+    if (!outDir) return res.status(400).json({ error: 'Invalid output path' });
     fs.mkdirSync(outDir, { recursive: true });
     const vanillaJar = safeVanillaJar(req.body?.vanillaJar);
     const mcVersion = normalizeMcVersion(req.body?.mcVersion);
@@ -131,30 +183,42 @@ app.post('/api/analyze', upload.array('mods', 50), async (req, res) => {
     res.json({
       ok: true,
       mcVersion,
-      analysisUrl: `/data/${path.basename(outDir)}/analysis.json`,
+      analysisUrl: `/data/${outId}/analysis.json`,
       ...result.summary,
     });
   } catch (e) {
     log.error({ err: e }, 'analyze failed');
-    res.status(e?.status || 500).json({ error: String(e?.message || e) });
+    const status = e?.status || 500;
+    res.status(status).json({ error: status >= 500 ? 'Analysis failed' : String(e?.message || e) });
+  } finally {
+    cleanupUploads(files);
   }
 });
 
 app.get('/api/analysis/:id', (req, res) => {
-  const id = req.params.id.replace(/[^a-zA-Z0-9._-]/g, '_');
-  const p = path.join(dataDir, id, 'analysis.json');
-  if (!fs.existsSync(p)) return res.status(404).json({ error: 'Not found' });
+  const id = req.params.id;
+  if (!isSafeId(id)) return res.status(404).json({ error: 'Not found' });
+  const p = safeDataPath(id, 'analysis.json');
+  if (!p || !fs.existsSync(p)) return res.status(404).json({ error: 'Not found' });
   res.sendFile(p);
 });
 
-app.listen(PORT, () => {
-  log.info({ port: PORT, versions: SUPPORTED_VERSIONS.length, latest: LATEST_VERSION }, 'recipe-analyzer listening');
+app.use((err, req, res, _next) => {
+  cleanupUploads(req?.files || []);
+  log.error({ err }, 'request failed');
+  if (err instanceof multer.MulterError) return res.status(400).json({ error: err.code });
+  const status = err?.status || 500;
+  res.status(status).json({ error: status >= 500 ? 'Internal server error' : String(err?.message || err) });
+});
+
+app.listen(PORT, HOST, () => {
+  log.info({ host: HOST, port: PORT, versions: SUPPORTED_VERSIONS.length, latest: LATEST_VERSION }, 'recipe-analyzer listening');
   const v = findVanillaJar(DEFAULT_VERSION);
   log.info({ jar: v, mcVersion: DEFAULT_VERSION }, v ? 'vanilla jar detected' : 'vanilla jar not found');
   // 只预热默认版本的 vanilla 渲染；其他版本在首次分析或手动调用 /api/prewarm-vanilla 时按需生成。
   // 延迟到下一轮事件循环再启动预热，避免阻塞首个请求；进度见 /api/vanilla-status
   setImmediate(() => {
-    prewarmVanillaRenders({ mcVersion: DEFAULT_VERSION, vanillaJar: process.env.VANILLA_JAR || null })
+    prewarmVanillaRenders({ mcVersion: DEFAULT_VERSION, vanillaJar: process.env.VANILLA_JAR || null, dataDir })
       .then(r => log.info({ result: r }, 'vanilla prewarm done'))
       .catch(e => log.warn({ err: e }, 'vanilla prewarm failed'));
   });
