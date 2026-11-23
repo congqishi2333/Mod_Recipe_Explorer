@@ -4,12 +4,14 @@ const summaryEl = document.getElementById('summary');
 const resultsEl = document.getElementById('results');
 const jumpBar = document.getElementById('jumpBar');
 const categoryFilter = document.getElementById('categoryFilter');
+const acqFilter = document.getElementById('acqFilter');
 const searchInput = document.getElementById('searchInput');
 const categoryStats = document.getElementById('categoryStats');
 const vanillaStatus = document.getElementById('vanillaStatus');
 const vanillaJarInput = document.getElementById('vanillaJar');
 const mcVersionSelect = document.getElementById('mcVersion');
 const includeVanillaEquivalentsInput = document.getElementById('includeVanillaEquivalents');
+const clearCacheBtn = document.getElementById('clearCacheBtn');
 const suspiciousOnly = document.getElementById('suspiciousOnly');
 const auditDashboard = document.getElementById('auditDashboard');
 const iconRenderStatsEl = document.getElementById('iconRenderStats');
@@ -59,6 +61,23 @@ async function refreshVanillaStatus() {
 }
 vanillaJarInput.addEventListener('change', refreshVanillaStatus);
 mcVersionSelect.addEventListener('change', refreshVanillaStatus);
+if (clearCacheBtn) clearCacheBtn.addEventListener('click', async () => {
+  clearCacheBtn.disabled = true;
+  const old = statusEl.textContent;
+  statusEl.textContent = '清理内存缓存中...';
+  try {
+    const res = await fetch('/api/clear-cache', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ resetStats: false }) });
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || '清理失败');
+    statusEl.textContent = `已清空内存缓存${data.gcRan ? '（已触发GC）' : '（未启用--expose-gc，等待V8回收）'}，RSS ${data.memory?.rssMB ?? '?'} MB`;
+    refreshVanillaStatus();
+  } catch (e) {
+    statusEl.textContent = `清理失败：${e.message}`;
+    setTimeout(() => { if (statusEl.textContent.startsWith('清理失败')) statusEl.textContent = old; }, 3000);
+  } finally {
+    clearCacheBtn.disabled = false;
+  }
+});
 loadVersions();
 
 form.addEventListener('submit', async (e) => {
@@ -97,7 +116,7 @@ form.addEventListener('submit', async (e) => {
     buildCategoryFilter(analysis.summary?.categories || {});
     renderAudit(analysis.summary?.coverage);
     renderIconRenderStats(analysis.summary?.iconRenderStats);
-    renderDependencies(analysis.summary?.dependencies);
+    renderDependencies(analysis.summary?.dependencies, analysis.summary);
     if (downloadAnalysis && currentAnalysisUrl) {
       downloadAnalysis.href = currentAnalysisUrl;
       downloadAnalysis.download = `${(data.modFile || 'analysis').replace(/\.(jar|zip)$/i, '')}-analysis.json`;
@@ -162,10 +181,20 @@ function restoreJump() {
   render();
 }
 
+function renderIssueSamples(samples = [], codeKey = null) {
+  if (!Array.isArray(samples) || !samples.length) return '';
+  const items = samples.slice(0, 8).map(s => {
+    const code = codeKey && s?.[codeKey] ? `[${esc(String(s[codeKey]))}] ` : '';
+    return `<li><code>${esc(String(s?.file || 'unknown'))}</code> — ${code}${esc(String(s?.error || 'unknown error'))}</li>`;
+  }).join('');
+  return `<details class="audit-samples"><summary>查看样本(${Math.min(samples.length, 8)}${samples.length > 8 ? '+' : ''})</summary><ul>${items}</ul></details>`;
+}
+
 function renderAudit(coverage) {
   if (!coverage) { auditDashboard.innerHTML = '<div class="empty">无覆盖率数据</div>'; return; }
   const pct = (v) => `${Math.round((v || 0) * 100)}%`;
   const warn = (coverage.suspiciousRecipes || 0) > 0;
+  const failed = (coverage.failedFiles || 0) > 0;
   const reasonEntries = Object.entries(coverage.suspiciousReasons || {});
   auditDashboard.innerHTML = `
     <div class="audit-grid">
@@ -174,12 +203,15 @@ function renderAudit(coverage) {
       <div class="audit-metric ${coverage.parseRate != null && coverage.parseRate < 1 ? 'metric-warn' : ''}"><div class="audit-metric-label">解析率</div><div class="audit-metric-value">${pct(coverage.parseRate)}</div></div>
       <div class="audit-metric ${warn ? 'metric-warn' : ''}"><div class="audit-metric-label">可疑配方</div><div class="audit-metric-value">${coverage.suspiciousRecipes ?? 0}</div></div>
       <div class="audit-metric ${(coverage.unknownIngredients || 0) > 0 ? 'metric-warn' : ''}"><div class="audit-metric-label">未知材料</div><div class="audit-metric-value">${coverage.unknownIngredients ?? 0}<span class="audit-metric-sub"> / ${coverage.totalIngredients ?? 0}</span></div></div>
-      <div class="audit-metric"><div class="audit-metric-label">未知类型 / 推断</div><div class="audit-metric-value">${coverage.unknownTypeRecipes ?? 0}<span class="audit-metric-sub"> / ${coverage.inferredRecipes ?? 0}</span></div></div>
+      <div class="audit-metric ${(coverage.unknownTypeRecipes || 0) > 0 || failed ? 'metric-warn' : ''}"><div class="audit-metric-label">未知类型 / 失败</div><div class="audit-metric-value">${coverage.unknownTypeRecipes ?? 0}<span class="audit-metric-sub"> / ${coverage.failedFiles ?? 0}</span></div></div>
     </div>
     <div class="audit-reasons">${reasonEntries.length ? reasonEntries.map(([k, v]) => `<span class="stat">${esc(REASON_LABELS[k] || k)}: ${v}</span>`).join('') : ''}</div>
+    ${(coverage.readErrors || 0) > 0 ? `<div class="audit-warning">⚠ 有 ${coverage.readErrors} 个配方文件读取失败（加密/不支持压缩/损坏/超限）。${Object.keys(coverage.readErrorCodes||{}).length ? ` 详情: ${esc(Object.entries(coverage.readErrorCodes).map(([k,v])=>`${k}:${v}`).join(', '))}` : ''}${renderIssueSamples(coverage.readErrorSamples, 'code')}</div>` : ''}
+    ${failed ? `<div class="audit-warning">⚠ 有 ${coverage.failedFiles} 个配方文件解析异常，已跳过并计入失败统计。${renderIssueSamples(coverage.failedSamples)}</div>` : ''}
+    ${(coverage.invalidJsonFiles || 0) > 0 ? `<div class="audit-warning">⚠ 有 ${coverage.invalidJsonFiles} 个配方文件 JSON 无效。${renderIssueSamples(coverage.invalidJsonSamples)}</div>` : ''}
     ${warn
       ? `<div class="audit-warning">⚠ 有 ${coverage.suspiciousRecipes} 条配方解析存疑（零输入 / 未知材料 / 无产物 / 未知类型）。已标红，勾选「只看可疑」可定位核对。</div>`
-      : '<div class="audit-ok">✓ 未发现明显解析异常。</div>'}`;
+      : (!failed && !(coverage.readErrors > 0) && !(coverage.invalidJsonFiles > 0) ? '<div class="audit-ok">✓ 未发现明显解析异常。</div>' : '')}`;
 }
 
 function renderIconRenderStats(s) {
@@ -193,7 +225,7 @@ function renderIconRenderStats(s) {
     </div>`;
 }
 
-function renderDependencies(d) {
+function renderDependencies(d, summary = {}) {
   if (!dependencyDashboard) return;
   if (!d) { dependencyDashboard.innerHTML = '<div class="empty">无依赖归类数据</div>'; return; }
   const ext = d.externalNamespaces || [];
@@ -204,12 +236,18 @@ function renderDependencies(d) {
   const modList = registry.length
     ? `<details class="dep-registry"><summary>本次识别到 ${registry.length} 个命名空间（命名空间 → 模组）</summary><div class="dep-list">${registry.map(n => `<div class="dep-item"><b>${esc(n.namespace)}</b> → ${esc(n.modName)}${n.specific ? '' : '（推断）'}</div>`).join('')}</div></details>`
     : '';
+  const conflictCount = summary.conflictCount || 0;
+  const conflicts = summary.conflicts || [];
+  const conflictHtml = conflictCount
+    ? `<div class="audit-warning">⚠ 检测到 ${conflictCount} 个跨 jar 同名条目冲突（采用先上传者优先）。${conflicts.length ? `<div class="dep-list">${conflicts.slice(0, 8).map(c => `<div class="dep-item"><span class="dep-ns">${esc(c.path)}</span><span class="dep-examples">winner: ${esc(c.winner)}; jars: ${esc((c.jars||[]).join(', '))}</span></div>`).join('')}</div>` : ''}</div>`
+    : '';
   dependencyDashboard.innerHTML = `
     <div class="audit-grid">
       <div class="audit-metric"><div class="audit-metric-label">原版引用</div><div class="audit-metric-value">${d.vanillaRefs ?? 0}</div></div>
       <div class="audit-metric"><div class="audit-metric-label">内部引用</div><div class="audit-metric-value">${d.internalRefs ?? 0}<span class="audit-metric-sub"> / ${d.internalNamespaces ?? 0} 个命名空间</span></div></div>
-      <div class="audit-metric ${ext.length ? 'metric-warn' : ''}"><div class="audit-metric-label">外部依赖</div><div class="audit-metric-value">${d.externalRefs ?? 0}<span class="audit-metric-sub"> / ${ext.length} 个命名空间</span></div></div>
+      <div class="audit-metric ${ext.length || conflictCount ? 'metric-warn' : ''}"><div class="audit-metric-label">外部依赖 / 冲突</div><div class="audit-metric-value">${d.externalRefs ?? 0}<span class="audit-metric-sub"> / ${conflictCount}</span></div></div>
     </div>
+    ${conflictHtml}
     <h3 class="audit-subtitle">外部依赖清单 <span class="audit-subtitle-note">（不算解析失败）</span></h3>
     ${extList}
     ${modList}`;

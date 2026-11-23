@@ -441,5 +441,64 @@ console.log('\n[15] 烹饪站点变体：标记为获取方式差异，站点列
   check('未合并的单条配方不带变体类型标记', analysis.recipeEntries.every(r => r.variantKind === undefined));
 }
 
+console.log('\n[16] zip 读取错误分类 + 累计解压预算');
+{
+  const budgetZip = path.join(tmp, 'budget.zip');
+  fs.writeFileSync(budgetZip, makeZip([
+    ['a.txt', Buffer.alloc(200000, 97)],
+    ['b.txt', Buffer.alloc(200000, 98)],
+  ]));
+  const budgetIndex = readZipEntries(budgetZip, { maxTotalInflated: 250000 });
+  let budgetErr = null;
+  try { budgetIndex.entries.get('a.txt').getData(); budgetIndex.entries.get('b.txt').getData(); }
+  catch (e) { budgetErr = e; }
+  check('累计解压预算生效', /budget exceeded/i.test(String(budgetErr?.message || budgetErr)), budgetErr?.message);
+
+  const badZip = path.join(tmp, 'bad-method.zip');
+  const goodRecipe = Buffer.from(JSON.stringify({ type: 'minecraft:crafting_shapeless', ingredients:[{item:'minecraft:stone'}], result:{id:'m:ok',count:1} }));
+  const badRecipe = Buffer.from(JSON.stringify({ type: 'minecraft:crafting_shapeless', ingredients:[{item:'minecraft:dirt'}], result:{id:'m:bad',count:1} }));
+  const files2 = [['data/m/recipe/good.json', goodRecipe], ['data/m/recipe/bad.json', badRecipe]];
+  const locals=[], centrals=[]; let off=0;
+  for (const [name,data] of files2) {
+    const nameBuf=Buffer.from(name,'utf8');
+    const isBad = name.endsWith('bad.json');
+    const method = isBad ? 99 : 8;
+    const packed = isBad ? data : zlib.deflateRawSync(data);
+    const local=Buffer.alloc(30+nameBuf.length);
+    local.writeUInt32LE(0x04034b50,0); local.writeUInt16LE(20,4); local.writeUInt16LE(method,8);
+    local.writeUInt32LE(packed.length,18); local.writeUInt32LE(data.length,22); local.writeUInt16LE(nameBuf.length,26);
+    nameBuf.copy(local,30); const part=Buffer.concat([local,packed]); locals.push(part);
+    const central=Buffer.alloc(46+nameBuf.length);
+    central.writeUInt32LE(0x02014b50,0); central.writeUInt16LE(20,4); central.writeUInt16LE(20,6); central.writeUInt16LE(method,10);
+    central.writeUInt32LE(packed.length,20); central.writeUInt32LE(data.length,24); central.writeUInt16LE(nameBuf.length,28); central.writeUInt32LE(off,42);
+    nameBuf.copy(central,46); centrals.push(central); off+=part.length;
+  }
+  const cd=Buffer.concat(centrals); const eocd=Buffer.alloc(22);
+  eocd.writeUInt32LE(0x06054b50,0); eocd.writeUInt16LE(files2.length,8); eocd.writeUInt16LE(files2.length,10); eocd.writeUInt32LE(cd.length,12); eocd.writeUInt32LE(off,16);
+  fs.writeFileSync(badZip, Buffer.concat([...locals,cd,eocd]));
+  const outDir = path.join(tmp, 'readerr-out');
+  fs.mkdirSync(outDir, { recursive: true });
+  const res = await analyzeModJar(badZip, outDir, { mcVersion: '1.21.1' });
+  check('读取错误不计入 invalidJson', (res.summary.coverage?.invalidJsonFiles || 0) === 0, JSON.stringify(res.summary.coverage));
+  check('读取错误单独计数', (res.summary.coverage?.readErrors || 0) === 1, JSON.stringify(res.summary.coverage?.readErrorCodes));
+  check('读取错误分类正确', res.summary.coverage?.readErrorCodes?.['unsupported-compression'] === 1, JSON.stringify(res.summary.coverage?.readErrorCodes));
+  check('正常配方仍解析', res.summary.recipeCount === 1, String(res.summary.recipeCount));
+}
+
+console.log('\n[17] 多 jar 冲突报告');
+{
+  const j = (o) => Buffer.from(JSON.stringify(o), 'utf8');
+  const j1 = path.join(tmp, 'conf-a.jar');
+  const j2 = path.join(tmp, 'conf-b.jar');
+  fs.writeFileSync(j1, makeZip([['data/m/recipe/same.json', j({type:'minecraft:crafting_shapeless',ingredients:[{item:'minecraft:stone'}],result:{id:'m:from_a',count:1}})]]));
+  fs.writeFileSync(j2, makeZip([['data/m/recipe/same.json', j({type:'minecraft:crafting_shapeless',ingredients:[{item:'minecraft:dirt'}],result:{id:'m:from_b',count:1}})]]));
+  const outDir = path.join(tmp, 'conf-out');
+  fs.mkdirSync(outDir, { recursive: true });
+  const res = await analyzeModJar([j1,j2], outDir, { mcVersion: '1.21.1' });
+  check('conflictCount=1', res.summary.conflictCount === 1, String(res.summary.conflictCount));
+  check('winner 为先上传 jar', res.summary.conflicts?.[0]?.winner === 'conf-a.jar', JSON.stringify(res.summary.conflicts?.[0]));
+  check('先上传者结果生效', res.recipeEntries?.[0]?.result?.id === 'm:from_a', res.recipeEntries?.[0]?.result?.id);
+}
+
 console.log(`\n结果: ${pass} PASS / ${fail} FAIL\n`);
 process.exit(fail ? 1 : 0);
