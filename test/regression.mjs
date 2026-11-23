@@ -10,7 +10,7 @@ import { PNG } from 'pngjs';
 const { collectRecipes } = await import(pathToFileURL(path.join(root, 'lib/recipes.js')).href);
 const { analyzeModJar } = await import(pathToFileURL(path.join(root, 'lib/analyzer.js')).href);
 const { classifyRecipe } = await import(pathToFileURL(path.join(root, 'lib/classify.js')).href);
-const { pruneDataDir, pruneUploadsDir, pruneVanillaRendersDir } = await import(pathToFileURL(path.join(root, 'lib/data-maintenance.js')).href);
+const { pruneDataDir, pruneUploadsDir, pruneVanillaRendersDir, getVanillaRendersStats } = await import(pathToFileURL(path.join(root, 'lib/data-maintenance.js')).href);
 const { extractTextureFromSources } = await import(pathToFileURL(path.join(root, 'lib/zip.js')).href);
 
 let pass = 0, fail = 0;
@@ -166,11 +166,11 @@ console.log('\n[4] data maintenance: age/maxEntries/maxTotalBytes/protectNames')
   mk('300000-new', 1 * 60 * 60 * 1000, 100);
   mk('400000-protect', 20 * 24 * 60 * 60 * 1000, 100);
 
-  let r = pruneDataDir(dataDir, { maxAgeMs: 3 * 24 * 60 * 60 * 1000, maxEntries: 10, maxTotalBytes: 1024 * 1024, protectNames: ['400000-protect'] });
+  let r = await pruneDataDir(dataDir, { maxAgeMs: 3 * 24 * 60 * 60 * 1000, maxEntries: 10, maxTotalBytes: 1024 * 1024, protectNames: ['400000-protect'] });
   check('age 清理旧目录', r.removed.some(x => x.name === '100000-old' && x.reason === 'age'), JSON.stringify(r.removed));
   check('protectNames 保留过期目录', fs.existsSync(path.join(dataDir, '400000-protect')), r.removed.map(x=>x.name).join(','));
 
-  r = pruneDataDir(dataDir, { maxAgeMs: 30 * 24 * 60 * 60 * 1000, maxEntries: 2, maxTotalBytes: 1024 * 1024, protectNames: ['400000-protect'] });
+  r = await pruneDataDir(dataDir, { maxAgeMs: 30 * 24 * 60 * 60 * 1000, maxEntries: 2, maxTotalBytes: 1024 * 1024, protectNames: ['400000-protect'] });
   check('maxEntries 清理最旧非保护目录', !fs.existsSync(path.join(dataDir, '200000-mid')) && fs.existsSync(path.join(dataDir, '300000-new')), JSON.stringify(r.removed));
 
   // maxTotalBytes: keep newest + protected if possible
@@ -178,7 +178,7 @@ console.log('\n[4] data maintenance: age/maxEntries/maxTotalBytes/protectNames')
   mk2(dataDir2, '100000-a', 3 * 60 * 60 * 1000, 400);
   mk2(dataDir2, '200000-b', 2 * 60 * 60 * 1000, 400);
   mk2(dataDir2, '300000-c', 1 * 60 * 60 * 1000, 400);
-  const r2 = pruneDataDir(dataDir2, { maxAgeMs: 30 * 24 * 60 * 60 * 1000, maxEntries: 10, maxTotalBytes: 900, protectNames: [] });
+  const r2 = await pruneDataDir(dataDir2, { maxAgeMs: 30 * 24 * 60 * 60 * 1000, maxEntries: 10, maxTotalBytes: 900, protectNames: [] });
   check('maxTotalBytes 清理旧目录', r2.removed.some(x => x.reason === 'maxTotalBytes'), JSON.stringify(r2.removed));
   check('maxTotalBytes 保留最新', fs.existsSync(path.join(dataDir2, '300000-c')), fs.readdirSync(dataDir2).join(','));
 }
@@ -201,7 +201,7 @@ console.log('\n[5] uploads maintenance: 过期上传文件清理');
   fs.writeFileSync(newFile, 'new');
   const oldT = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
   fs.utimesSync(oldFile, oldT, oldT);
-  const r = pruneUploadsDir(upDir, 24 * 60 * 60 * 1000);
+  const r = await pruneUploadsDir(upDir, 24 * 60 * 60 * 1000);
   check('过期上传被删', !fs.existsSync(oldFile) && r.removed === 1, JSON.stringify(r));
   check('新上传保留', fs.existsSync(newFile), fs.readdirSync(upDir).join(','));
 }
@@ -245,7 +245,7 @@ console.log('\n[7] vanilla-renders prune: age/maxTotalBytes/protectVersions');
   mkVer('1.21.4', 40 * 24 * 60 * 60 * 1000, 100);
   mkVer('26.1', 1 * 24 * 60 * 60 * 1000, 100);
 
-  let r = pruneVanillaRendersDir(rootDir, { maxAgeMs: 30 * 24 * 60 * 60 * 1000, maxTotalBytes: 10 * 1024, protectVersions: ['1.21.1'] });
+  let r = await pruneVanillaRendersDir(rootDir, { maxAgeMs: 30 * 24 * 60 * 60 * 1000, maxTotalBytes: 10 * 1024, protectVersions: ['1.21.1'] });
   check('过期版本被清理', r.removed.some(x => x.name === '1.21.4' && x.reason === 'age'), JSON.stringify(r.removed));
   check('受保护版本保留', fs.existsSync(path.join(rootDir, '1.21.1')), JSON.stringify(r.removed));
 
@@ -253,9 +253,21 @@ console.log('\n[7] vanilla-renders prune: age/maxTotalBytes/protectVersions');
   mkVer2(root2, '1.21.1', 3 * 24 * 60 * 60 * 1000, 400);
   mkVer2(root2, '1.21.4', 2 * 24 * 60 * 60 * 1000, 400);
   mkVer2(root2, '26.1', 1 * 24 * 60 * 60 * 1000, 400);
-  const r2 = pruneVanillaRendersDir(root2, { maxAgeMs: 60 * 24 * 60 * 60 * 1000, maxTotalBytes: 900, protectVersions: [] });
+  const r2 = await pruneVanillaRendersDir(root2, { maxAgeMs: 60 * 24 * 60 * 60 * 1000, maxTotalBytes: 900, protectVersions: [] });
   check('vanilla-renders maxTotalBytes 生效', r2.removed.some(x => x.reason === 'maxTotalBytes'), JSON.stringify(r2.removed));
   check('vanilla-renders 保留最新', fs.existsSync(path.join(root2, '26.1')), fs.readdirSync(root2).join(','));
+
+  const root3 = fs.mkdtempSync(path.join(tmp, 'vr3-'));
+  mkVer2(root3, '1.21.1', 3 * 24 * 60 * 60 * 1000, 100);
+  mkVer2(root3, '1.21.4', 2 * 24 * 60 * 60 * 1000, 100);
+  mkVer2(root3, '26.1', 1 * 24 * 60 * 60 * 1000, 100);
+  const r3 = await pruneVanillaRendersDir(root3, { maxAgeMs: 60 * 24 * 60 * 60 * 1000, maxEntries: 2, maxTotalBytes: 10 * 1024, protectVersions: [] });
+  check('vanilla-renders maxEntries 生效', r3.removed.some(x => x.reason === 'maxEntries'), JSON.stringify(r3.removed));
+  check('vanilla-renders maxEntries 保留最新', fs.existsSync(path.join(root3, '26.1')), fs.readdirSync(root3).join(','));
+
+  const stats = await getVanillaRendersStats(root3);
+  check('vanilla-renders stats 有版本计数', stats.versionCount >= 1, JSON.stringify(stats));
+  check('vanilla-renders stats 有 totalBytes', stats.totalBytes > 0, JSON.stringify(stats));
 }
 
 function mkVer2(rootDir, name, ageMs, bytes) {
@@ -274,6 +286,30 @@ console.log('\n[8] L6: 分类边界匹配，避免常见误判');
   check('music_disc_13 归装饰/功能', classifyRecipe({ result: { id: 'minecraft:music_disc_13' } }, ai).category === '装饰/功能');
   check('jukebox 归装饰/功能', classifyRecipe({ result: { id: 'minecraft:jukebox' } }, ai).category === '装饰/功能');
   check('bookshelf 归装饰/功能', classifyRecipe({ result: { id: 'minecraft:bookshelf' } }, ai).category === '装饰/功能');
+}
+
+console.log('\n[9] 端到端：畸形纹理降级，不污染 parseQuality');
+{
+  const jar = path.join(tmp, 'badtex.jar');
+  fs.writeFileSync(jar, makeZip([
+    ['data/m/recipe/a.json', Buffer.from(JSON.stringify({
+      type: 'minecraft:crafting_shapeless',
+      ingredients: [{ item: 'm:bad_item' }],
+      result: { id: 'm:bad_item', count: 1 }
+    }))],
+    ['assets/m/models/item/bad_item.json', Buffer.from(JSON.stringify({
+      parent: 'item/generated',
+      textures: { layer0: 'm:item/bad_item' }
+    }))],
+    ['assets/m/textures/item/bad_item.png', Buffer.from('not a png')],
+  ]));
+  const outDir = fs.mkdtempSync(path.join(tmp, 'badtex-out-'));
+  const res = await analyzeModJar(jar, outDir, { mcVersion: '1.21.1' });
+  const r = res.recipes[0];
+  check('分析成功', !!res.summary, String(res.error || 'ok'));
+  check('配方 parseQuality 未被纹理污染', r?.parseQuality?.suspicious === false, JSON.stringify(r?.parseQuality));
+  check('畸形纹理不产出 icon/model3d', !r?.result?.icon && !r?.result?.model3d, JSON.stringify({ icon: r?.result?.icon, model3d: r?.result?.model3d }));
+  check('坏纹理未落盘到 icons', !fs.existsSync(path.join(outDir, 'icons', 'bad_item.png')), fs.existsSync(path.join(outDir, 'icons')) ? fs.readdirSync(path.join(outDir, 'icons')).join(',') : 'no-icons');
 }
 
 console.log(`\n结果: ${pass} PASS / ${fail} FAIL\n`);
