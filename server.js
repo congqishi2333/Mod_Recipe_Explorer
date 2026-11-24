@@ -245,8 +245,8 @@ function safeVanillaJar(input) {
 const storage = multer.diskStorage({
   destination: (_req, _file, cb) => cb(null, uploadDir),
   filename: (_req, file, cb) => {
-    const safe = file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
-    cb(null, `${Date.now()}-${safe}`);
+    const base = path.parse(file.originalname).name.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80) || 'mod';
+    cb(null, `${Date.now()}-${base}.upload`);
   }
 });
 const upload = multer({
