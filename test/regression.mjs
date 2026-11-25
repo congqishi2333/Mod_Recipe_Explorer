@@ -11,7 +11,7 @@ const { collectRecipes } = await import(pathToFileURL(path.join(root, 'lib/recip
 const { analyzeModJar } = await import(pathToFileURL(path.join(root, 'lib/analyzer.js')).href);
 const { classifyRecipe } = await import(pathToFileURL(path.join(root, 'lib/classify.js')).href);
 const { pruneDataDir, pruneUploadsDir, pruneVanillaRendersDir, getVanillaRendersStats } = await import(pathToFileURL(path.join(root, 'lib/data-maintenance.js')).href);
-const { extractTextureFromSources } = await import(pathToFileURL(path.join(root, 'lib/zip.js')).href);
+const { extractTextureFromSources, getJsonResult, readZipIndex } = await import(pathToFileURL(path.join(root, 'lib/zip.js')).href);
 
 let pass = 0, fail = 0;
 function check(name, cond, detail = '') {
@@ -310,6 +310,22 @@ console.log('\n[9] 端到端：畸形纹理降级，不污染 parseQuality');
   check('配方 parseQuality 未被纹理污染', r?.parseQuality?.suspicious === false, JSON.stringify(r?.parseQuality));
   check('畸形纹理不产出 icon/model3d', !r?.result?.icon && !r?.result?.model3d, JSON.stringify({ icon: r?.result?.icon, model3d: r?.result?.model3d }));
   check('坏纹理未落盘到 icons', !fs.existsSync(path.join(outDir, 'icons', 'bad_item.png')), fs.existsSync(path.join(outDir, 'icons')) ? fs.readdirSync(path.join(outDir, 'icons')).join(',') : 'no-icons');
+}
+
+console.log('\n[10] zip JSON: 容忍 BOM/NUL 等 MC 常见隐形字符');
+{
+  const jar = path.join(tmp, 'bom.jar');
+  fs.writeFileSync(jar, makeZip([
+    ['data/m/recipe/bom.json', Buffer.concat([Buffer.from([0xEF, 0xBB, 0xBF]), Buffer.from(JSON.stringify({ type: 'minecraft:crafting_shapeless', ingredients: [{ item: 'minecraft:stick' }], result: { id: 'minecraft:stick', count: 1 } }))])],
+    ['data/m/recipe/nul.json', Buffer.from('{"type":"minecraft:crafting_shapeless","ingredients":[{"item":"minecraft:stone"}],"result":{"id":"minecraft:stone","count":1}}\u0000', 'utf8')],
+  ]));
+  const { entries } = readZipIndex(jar);
+  const bom = getJsonResult(entries, 'data/m/recipe/bom.json');
+  check('BOM JSON 解析成功', bom.ok === true, JSON.stringify(bom));
+  check('BOM JSON 内容正确', bom.value?.result?.id === 'minecraft:stick', JSON.stringify(bom.value?.result));
+  const nul = getJsonResult(entries, 'data/m/recipe/nul.json');
+  check('NUL JSON 解析成功', nul.ok === true, JSON.stringify(nul));
+  check('NUL JSON 内容正确', nul.value?.result?.id === 'minecraft:stone', JSON.stringify(nul.value?.result));
 }
 
 console.log(`\n结果: ${pass} PASS / ${fail} FAIL\n`);
